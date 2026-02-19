@@ -1,88 +1,291 @@
-<!doctype html>
+<!-- =========================
+REPLACE ENTIRE index.html WITH THIS
+Premium glass UI + clean layout + smarter controls.
+Keep: style.json + airplane_topview.png in same folder.
+========================= -->
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Agentic Twins — Global Air Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agentic Twins — Global Air Network (Premium)</title>
 
-  <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
-  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  <link href="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.css" rel="stylesheet" />
 
   <style>
-    html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background:#0b1020; color:#e7ecff;}
-    .wrap { display:flex; height:100%; }
-    #mapWrap { position:relative; flex: 1; }
-    #map { position:absolute; inset:0; }
-    #overlay { position:absolute; inset:0; pointer-events:none; }
-
-    .panel { width: 420px; border-left: 1px solid rgba(255,255,255,.08); background: rgba(12,16,32,.96); display:flex; flex-direction:column; }
-    .panel h1 { font-size: 16px; margin: 14px 14px 8px; font-weight: 650; }
-    .controls { display:flex; flex-wrap:wrap; gap:8px; padding: 0 14px 14px; }
-    button {
-      background:#1a2450; color:#e7ecff; border:1px solid rgba(255,255,255,.10);
-      padding: 8px 10px; border-radius: 10px; cursor:pointer; font-weight: 600; font-size: 13px;
-    }
-    button:hover { background:#243066; }
-    button:active { transform: translateY(1px); }
-
-    .chat { padding: 0 14px 14px; display:flex; flex-direction:column; gap:10px; }
-    .log { height: 220px; overflow:auto; background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 10px; font-size: 13px; line-height:1.35; }
-    .row { display:flex; gap:8px; }
-    input[type="text"]{
-      flex:1; padding: 9px 10px; border-radius: 10px; border:1px solid rgba(255,255,255,.10);
-      background: rgba(255,255,255,.03); color:#e7ecff; outline:none;
+    :root{
+      --bg0:#070b17;
+      --bg1:#0b1630;
+      --glass: rgba(255,255,255,.10);
+      --glass2: rgba(255,255,255,.14);
+      --stroke: rgba(255,255,255,.18);
+      --text: rgba(255,255,255,.92);
+      --muted: rgba(255,255,255,.70);
+      --accent: #4dd7ff;
+      --good: #00d08a;
+      --bad: #ff5a6a;
+      --shadow: 0 16px 48px rgba(0,0,0,.45);
+      --chatW: 360px;
     }
 
-    .dash { margin: 0 14px 14px; padding: 12px; border-radius: 12px; border:1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.04); }
-    .dash h2 { margin:0 0 8px; font-size: 13px; font-weight: 750; opacity:.95; }
-    table { width:100%; border-collapse: collapse; font-size: 12px; }
-    th, td { padding: 6px 6px; border-bottom: 1px solid rgba(255,255,255,.08); text-align:left; }
-    th { opacity:.85; font-weight: 750; }
-    .muted { opacity:.75; font-size: 12px; margin-top: 8px; }
+    html, body { height: 100%; margin: 0; }
+    body{
+      background:
+        radial-gradient(1200px 650px at 20% 18%, rgba(77,215,255,.12), transparent 55%),
+        radial-gradient(900px 550px at 78% 28%, rgba(0,208,138,.10), transparent 60%),
+        linear-gradient(180deg, var(--bg1), var(--bg0));
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    #app { position: relative; width: 100%; height: 100%; display: flex; }
+
+    /* Left dock */
+    #chat {
+      width: var(--chatW); min-width: 300px; max-width: 440px;
+      height: 100%; box-sizing: border-box; padding: 14px;
+      display:flex; flex-direction: column; gap: 12px;
+    }
+    #chatPanel{
+      background: linear-gradient(180deg, var(--glass2), var(--glass));
+      border: 1px solid var(--stroke);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+      display:flex; flex-direction: column; height: 100%;
+      overflow: hidden;
+    }
+    #chatHeader{
+      display:flex; align-items:center; justify-content:space-between;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--stroke);
+    }
+    #chatHeader h3{
+      margin:0;
+      font: 800 14px/1.2 system-ui;
+      letter-spacing:.25px;
+      display:flex; align-items:center; gap:8px;
+    }
+    #chatHeader h3 span.badge{
+      font: 700 11px/1 system-ui;
+      padding: 6px 8px;
+      border-radius: 999px;
+      background: rgba(77,215,255,.14);
+      border: 1px solid rgba(77,215,255,.25);
+      color: var(--text);
+    }
+    .iconbtn{
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.08);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 12px;
+      cursor:pointer;
+      font: 650 13px/1 system-ui;
+    }
+    .iconbtn:hover{ background: rgba(255,255,255,.12); }
+
+    #msgs{
+      flex:1; overflow:auto; padding: 14px;
+      display:flex; flex-direction:column; gap: 10px;
+      scroll-behavior:smooth;
+    }
+    .msg{
+      max-width: 92%;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 14px;
+      padding: 10px 12px;
+      font: 13px/1.35 system-ui;
+      background: rgba(255,255,255,.06);
+    }
+    .msg.user{
+      background: rgba(77,215,255,.12);
+      border-color: rgba(77,215,255,.22);
+    }
+    .msg small{
+      display:block; margin-top: 6px;
+      color: var(--muted); font-size: 11px;
+    }
+
+    #composer{
+      display:flex; gap:10px;
+      padding: 12px;
+      border-top: 1px solid var(--stroke);
+      background: rgba(255,255,255,.04);
+    }
+    #chatInput{
+      flex:1;
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(0,0,0,.22);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 11px 12px;
+      font: 13px/1.2 system-ui;
+      outline: none;
+    }
+    #chatInput::placeholder{ color: rgba(255,255,255,.55); }
+    #chatSend{
+      border: 1px solid rgba(77,215,255,.35);
+      background: rgba(77,215,255,.18);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 11px 12px;
+      cursor:pointer;
+      font: 800 13px/1 system-ui;
+    }
+    #chatSend:hover{ background: rgba(77,215,255,.26); }
+
+    /* Stage */
+    #stage{ position: relative; flex:1; height:100%; }
+    #map{ position:absolute; inset:0; }
+
+    /* Top control bar (glass) */
+    #ui{
+      position: fixed;
+      top: 14px;
+      left: calc(var(--chatW) + 14px);
+      display:flex;
+      gap: 10px;
+      z-index: 10;
+      padding: 10px;
+      border-radius: 18px;
+      border: 1px solid var(--stroke);
+      background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.08));
+      box-shadow: 0 10px 28px rgba(0,0,0,.30);
+      backdrop-filter: blur(12px);
+    }
+    #ui button{
+      background: rgba(255,255,255,.08);
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,.16);
+      padding: 10px 12px;
+      border-radius: 14px;
+      cursor:pointer;
+      font: 800 13px/1 system-ui;
+      letter-spacing:.2px;
+      display:flex; gap:8px; align-items:center;
+    }
+    #ui button:hover{ background: rgba(255,255,255,.12); }
+    #ui button.primary{
+      border-color: rgba(77,215,255,.40);
+      background: rgba(77,215,255,.16);
+    }
+    #ui button.good{
+      border-color: rgba(0,208,138,.42);
+      background: rgba(0,208,138,.14);
+    }
+    #ui button.bad{
+      border-color: rgba(255,90,106,.42);
+      background: rgba(255,90,106,.14);
+    }
+
+    /* Stats panel */
+    #stats{
+      position: fixed;
+      right: 14px; bottom: 14px;
+      width: 520px; max-height: 58vh; overflow:auto;
+      background: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.06));
+      border: 1px solid var(--stroke);
+      border-radius: 18px;
+      padding: 14px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+      z-index: 10;
+    }
+    #stats h3{
+      margin:0 0 10px 0;
+      font: 900 14px/1.2 system-ui;
+      display:flex; align-items:center; justify-content:space-between;
+      letter-spacing:.2px;
+    }
+    #stats h3 .pill{
+      font: 800 11px/1 system-ui;
+      padding: 6px 9px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.08);
+      border: 1px solid rgba(255,255,255,.14);
+      color: var(--muted);
+    }
+    #stats table{ width:100%; border-collapse: collapse; }
+    #stats th, #stats td{
+      padding: 7px 6px;
+      border-bottom: 1px solid rgba(255,255,255,.10);
+      font-size: 12px;
+    }
+    #stats th{ color: var(--muted); text-align:left; font-weight: 800; }
+    #stats .pos{ color: var(--good); font-weight: 900; }
+    #stats .neg{ color: var(--bad); font-weight: 900; }
+
+    /* Mobile */
+    @media(max-width: 980px){ :root{ --chatW: 320px; } #stats{ width: 460px; } }
+    @media(max-width: 820px){
+      #app{ flex-direction: column; }
+      #chat{ width:100%; height: 42%; max-height: 46%; }
+      #ui{ left: 14px; }
+      #stats{ width: calc(100% - 28px); }
+    }
   </style>
 </head>
 
 <body>
-  <div class="wrap">
-    <div id="mapWrap">
-      <div id="map"></div>
-      <canvas id="overlay"></canvas>
-    </div>
+  <div id="app">
+    <aside id="chat">
+      <div id="chatPanel">
+        <div id="chatHeader">
+          <h3>🎙️ Narration <span class="badge" id="modeBadge">Global</span></h3>
+          <div class="actions">
+            <button id="muteBtn" class="iconbtn">🔊 Mute</button>
+            <button id="clearBtn" class="iconbtn">Clear</button>
+          </div>
+        </div>
 
-    <div class="panel">
-      <h1>✈️ Global Air Network — Agentic Twin Demo</h1>
+        <div id="msgs"></div>
 
-      <div class="controls">
-        <button id="btnNormal">Normal</button>
-        <button id="btnDisrupt">Disrupt (next)</button>
-        <button id="btnCorrect">Correct</button>
-
-        <button id="btnAddParis">Add Paris</button>
-        <button id="btnAddVienna">Add Vienna</button>
-        <button id="btnHubDubai">Hub Dubai</button>
-      </div>
-
-      <div class="dash">
-        <h2>Predicted Dashboard Status</h2>
-        <table>
-          <thead>
-            <tr><th>Metric</th><th>Value</th></tr>
-          </thead>
-          <tbody id="dashBody"></tbody>
-        </table>
-        <div class="muted" id="dashNote"></div>
-      </div>
-
-      <div class="chat">
-        <div class="log" id="log"></div>
-        <div class="row">
-          <input id="chatInput" type="text" placeholder='Try: "Disrupt", "Correct", "Normal", "Add Paris", "Add Vienna", "Hub Dubai"' />
-          <button id="btnSend">Send</button>
+        <div id="composer">
+          <input id="chatInput" type="text"
+            placeholder="Commands: Disrupt / Correct / Normal / Add Paris / Add Vienna / Hub Dubai"
+            autocomplete="off" />
+          <button id="chatSend">Send</button>
         </div>
       </div>
-    </div>
+    </aside>
+
+    <main id="stage">
+      <div id="ui">
+        <button id="btnNormal" class="primary">🟦 Normal</button>
+        <button id="btnHub" class="primary">🟨 Hub Dubai</button>
+        <button id="btnDisrupt" class="bad">🟥 Disrupt</button>
+        <button id="btnCorrect" class="good">🟩 Correct</button>
+        <button id="btnAddParis">➕ Add Paris</button>
+        <button id="btnAddVienna">➕ Add Vienna</button>
+      </div>
+
+      <div id="stats">
+        <h3>Predicted Dashboard Status <span class="pill" id="scenarioPill">Normal operations</span></h3>
+        <table id="statsTable">
+          <thead>
+            <tr>
+              <th>City</th>
+              <th>Flights</th>
+              <th class="pos">Active</th>
+              <th class="neg">Paused</th>
+              <th>Capacity (t)</th>
+              <th>Time (hrs)</th>
+              <th>Fuel (t)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div id="map"></div>
+    </main>
   </div>
 
-  <script src="./script.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+  <script src="script.js"></script>
 </body>
 </html>
+
