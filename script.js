@@ -1,741 +1,840 @@
-/* =========================================================
-   Agentic Twins — Global Air Demo (drop-in script.js)
-   Changes implemented:
-   1) Global cities: DXB, FRA, ROM, LON, NYC, CHI + HKG + TYO
-   2) Add Paris
-   3) Add Vienna
-   4) Hub: Dubai
-   5) Multiple Disruption scenarios (cycle)
-   6) Corrections mapped to scenarios
-========================================================= */
+/* =========================
+REPLACE ENTIRE script.js WITH THIS
+Premium + performant + intelligent:
+- Curated global network (not all-to-all) so it looks intentional
+- Default = Hub Dubai (beautiful, readable)
+- 3 disruption scenarios (cycle) + smart corrections (reroute legs)
+- Planes capped for performance
+- Fixes speech autoplay via gesture unlock
+- Removes duplicate upsertCapitals bug
+========================= */
 
-// ------------------------ Map setup ------------------------
-const map = new maplibregl.Map({
-  container: "map",
-  style: "./style.json",
-  center: [20, 25],   // world-ish center
-  zoom: 1.6,
-  pitch: 0,
-  bearing: 0
-});
+const STYLE_URL = "style.json";
 
-map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-left");
+/* ---------- Map init (global view) ---------- */
+const MAP_INIT = { center:[35, 25], zoom: 2.2, minZoom: 1.5, maxZoom: 6.5 };
 
-// Canvas overlay for planes
-const overlay = document.getElementById("overlay");
-const ctx = overlay.getContext("2d");
+/* ---------- Assets ---------- */
+const PLANE_IMG_SRC = "airplane_topview.png";
+const PLANE_SIZE_MULT = 1.05;
 
-// ------------------------ UI helpers ------------------------
-const logEl = document.getElementById("log");
-const inputEl = document.getElementById("chatInput");
+/* ---------- Ops assumptions ---------- */
+const AIRCRAFT_CAPACITY_TONS = 18;     // widebody-ish for global vibe
+const AIRSPEED_KMPH = 870;
+const FUEL_BURN_KG_PER_KM = 3.1;
 
-function log(msg) {
-  const div = document.createElement("div");
-  div.textContent = msg;
-  logEl.appendChild(div);
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-function speak(text) {
-  try {
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 0.92;
-    u.pitch = 1.0;
-    speechSynthesis.cancel();
-    speechSynthesis.speak(u);
-  } catch (e) {
-    // ignore
-  }
-}
-
-function fitToVisibleNetwork(extraPadding = 60) {
-  const coords = Object.values(capitals).map(c => c.lngLat);
-  if (!coords.length) return;
-
-  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
-  for (const [lng, lat] of coords) {
-    minLng = Math.min(minLng, lng);
-    minLat = Math.min(minLat, lat);
-    maxLng = Math.max(maxLng, lng);
-    maxLat = Math.max(maxLat, lat);
-  }
-
-  map.fitBounds([[minLng, minLat], [maxLng, maxLat]], { padding: extraPadding, duration: 900 });
-}
-
-// ------------------------ City set ------------------------
-/**
- * City codes are arbitrary; keep short and consistent.
- * We keep HKG and TYO, remove ASEAN set, add global cities.
- */
-let capitals = {
-  HKG: { name: "Hong Kong", lngLat: [114.1694, 22.3193] },
-  TYO: { name: "Tokyo",     lngLat: [139.6917, 35.6895] },
-
-  DXB: { name: "Dubai",     lngLat: [55.2708, 25.2048] },
-  FRA: { name: "Frankfurt", lngLat: [8.6821, 50.1109] },
-  ROM: { name: "Rome",      lngLat: [12.4964, 41.9028] },
-  LON: { name: "London",    lngLat: [-0.1276, 51.5072] },
-  NYC: { name: "New York",  lngLat: [-74.0060, 40.7128] },
-  CHI: { name: "Chicago",   lngLat: [-87.6298, 41.8781] }
+/* ---------- Cities (premium global set) ---------- */
+const NODES = {
+  DXB: { name:"Dubai",      lon:55.2708,  lat:25.2048 },
+  FRA: { name:"Frankfurt",  lon:8.6821,   lat:50.1109 },
+  LON: { name:"London",     lon:-0.1276,  lat:51.5072 },
+  ROM: { name:"Rome",       lon:12.4964,  lat:41.9028 },
+  NYC: { name:"New York",   lon:-74.0060, lat:40.7128 },
+  CHI: { name:"Chicago",    lon:-87.6298, lat:41.8781 },
+  HKG: { name:"Hong Kong",  lon:114.1694, lat:22.3193 },
+  TYO: { name:"Tokyo",      lon:139.6917, lat:35.6895 }
 };
 
-// “Add” targets
-const ADD_PARIS = { code: "PAR", name: "Paris",  lngLat: [2.3522, 48.8566] };
-const ADD_VIENNA= { code: "VIE", name: "Vienna", lngLat: [16.3738, 48.2082] };
+const NEW_CITIES = {
+  PAR: { name:"Paris",  lon:2.3522,  lat:48.8566 },
+  VIE: { name:"Vienna", lon:16.3738, lat:48.2082 }
+};
 
-// ------------------------ Routes / network state ------------------------
-/**
- * We represent each route as a GeoJSON LineString with properties:
- * - id, from, to, kind: "base" | "reroute" | "hub"
- * Planes reference a route id to move along its polyline points.
- */
+/* ---------- Network design (curated, premium) ----------
+We avoid all-to-all clutter. We use:
+- Hub Dubai star (default)
+- A few signature “premium corridors” that look intelligent
+*/
+const HUB = "DXB";
 
-let routes = [];                 // active route objects
-let planes = [];                 // moving objects
-let pausedRouteIds = new Set();  // routes paused by disruption
-let activeScenarioIndex = -1;    // cycles through scenarios
+// signature corridors (unordered pairs)
+const SIGNATURE_CORRIDORS = [
+  ["LON","NYC"],   // transatlantic
+  ["FRA","ROM"],   // europe corridor
+  ["HKG","TYO"],   // east asia corridor
+  ["DXB","HKG"],   // hub to asia
+  ["DXB","LON"],   // hub to europe
+  ["NYC","CHI"]    // domestic
+];
 
-// Sprite for planes
-const planeImg = new Image();
-planeImg.src = "./airplane_topview.png";
-let planeImgReady = false;
-planeImg.onload = () => (planeImgReady = true);
-
-// ------------------------ Scenario definitions ------------------------
-/**
- * Disruption scenarios are defined on DIRECT pairs (from,to).
- * Correction is defined as a reroute path (sequence of legs).
- *
- * For each scenario:
- *  - disruptPairs: [ ["A","B"], ... ]  (pause flights on those base routes)
- *  - correctionPaths: [ ["A","X","B"], ["C","Y","Z","D"], ... ] (create reroutes)
- */
+/* ---------- Scenarios (cycle) ----------
+Each scenario:
+- disruptPairs: unordered pairs (pause both directions)
+- correctionPaths: list of paths (A->...->B) as legs, shown green
+*/
 const SCENARIOS = [
   {
-    name: "Middle East airspace constraint (DXB ↔ LON, DXB ↔ FRA)",
-    disruptPairs: [
-      ["DXB", "LON"],
-      ["DXB", "FRA"]
-    ],
+    name: "North Atlantic jetstream turbulence",
+    disruptPairs: [["LON","NYC"]],
     correctionPaths: [
-      ["DXB", "ROM", "LON"],
-      ["DXB", "ROM", "FRA"]
+      ["LON","FRA","NYC"],    // Europe hop to shift altitude corridor
+      ["NYC","CHI","LON"]     // alternate pattern (visual richness)
     ],
-    narrationDisrupt:
-      "Disruption detected. Dubai corridor capacity is constrained. Flights between Dubai and London, and Dubai and Frankfurt are paused.",
-    narrationCorrect:
-      "Correction applied. Rerouting via Rome to restore flow while avoiding constrained corridors."
+    disruptNarration:
+      "Disruption detected. North Atlantic turbulence is forcing capacity reductions on the London to New York corridor. Impacted flights are paused.",
+    correctNarration:
+      "Correction applied. Flights are rerouted via Frankfurt and Chicago to stabilize flow and maintain service levels."
   },
   {
-    name: "Transatlantic congestion (LON ↔ NYC, FRA ↔ NYC)",
-    disruptPairs: [
-      ["LON", "NYC"],
-      ["FRA", "NYC"]
-    ],
+    name: "Gulf airspace constraint",
+    disruptPairs: [["DXB","HKG"], ["DXB","LON"]],
     correctionPaths: [
-      ["LON", "CHI", "NYC"],
-      ["FRA", "LON", "CHI", "NYC"]
+      ["DXB","ROM","LON"],
+      ["DXB","TYO","HKG"]
     ],
-    narrationDisrupt:
-      "Disruption detected. Transatlantic congestion is rising. Pausing London to New York and Frankfurt to New York corridors.",
-    narrationCorrect:
-      "Correction applied. Rerouting via Chicago to smooth congestion and restore New York connectivity."
+    disruptNarration:
+      "Disruption detected. Gulf airspace constraints are affecting Dubai links to London and Hong Kong. Impacted flights are paused.",
+    correctNarration:
+      "Correction applied. Rerouting via Rome and Tokyo to preserve connectivity while avoiding constrained corridors."
   },
   {
-    name: "East Asia constraint (HKG ↔ TYO, HKG ↔ DXB)",
-    disruptPairs: [
-      ["HKG", "TYO"],
-      ["HKG", "DXB"]
-    ],
+    name: "East Asia corridor congestion",
+    disruptPairs: [["HKG","TYO"]],
     correctionPaths: [
-      ["HKG", "TYO", "DXB"],
-      ["HKG", "TYO", "FRA", "DXB"]
+      ["HKG","DXB","TYO"]
     ],
-    narrationDisrupt:
-      "Disruption detected. East Asia constraints active. Pausing Hong Kong to Tokyo and Hong Kong to Dubai corridors.",
-    narrationCorrect:
-      "Correction applied. Rerouting through Tokyo to preserve Hong Kong connectivity."
+    disruptNarration:
+      "Disruption detected. East Asia corridor congestion is rising between Hong Kong and Tokyo. Affected flights are paused.",
+    correctNarration:
+      "Correction applied. Routing via Dubai to smooth congestion and restore network balance."
   }
 ];
 
-// ------------------------ Geo helpers ------------------------
-function lerp(a, b, t) { return a + (b - a) * t; }
-function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+/* ---------- Utilities ---------- */
+function escapeHTML(s){ return String(s).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+function nowStamp(){ return new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
 
-function dist2(a, b) {
-  const dx = a[0] - b[0], dy = a[1] - b[1];
-  return dx*dx + dy*dy;
+// unordered key helper
+function keyPair(A,B){ return [A,B].sort().join("-"); }
+
+/* ---------- Map ---------- */
+const map = new maplibregl.Map({
+  container: "map",
+  style: STYLE_URL,
+  center: MAP_INIT.center,
+  zoom: MAP_INIT.zoom,
+  minZoom: MAP_INIT.minZoom,
+  maxZoom: MAP_INIT.maxZoom,
+  attributionControl: true
+});
+map.addControl(new maplibregl.NavigationControl({visualizePitch:false}),"top-left");
+
+/* ---------- UI elements ---------- */
+const msgs = document.getElementById('msgs');
+const input = document.getElementById('chatInput');
+const send  = document.getElementById('chatSend');
+const muteBtn = document.getElementById('muteBtn');
+const clearBtn = document.getElementById('clearBtn');
+const modeBadge = document.getElementById('modeBadge');
+const scenarioPill = document.getElementById('scenarioPill');
+
+function pushMsg(t, kind='system'){
+  const d = document.createElement('div');
+  d.className = `msg ${kind}`;
+  d.innerHTML = `${escapeHTML(t)}<small>${nowStamp()}</small>`;
+  msgs.appendChild(d);
+  msgs.scrollTop = msgs.scrollHeight + 200;
 }
 
-/**
- * Creates a curved line between two lng/lat points by interpolating in lng/lat.
- * (Simple + stable; avoids great-circle edge weirdness near antimeridian.)
- */
-function makeArc(fromLngLat, toLngLat, steps = 80, curve = 0.18) {
-  const [x1, y1] = fromLngLat;
-  const [x2, y2] = toLngLat;
+/* ---------- Speech (gesture unlock) ---------- */
+const synth = window.speechSynthesis;
+let MUTED=false, VOICE=null, NARRATION_UNLOCKED=false;
 
-  // midpoint
-  const mx = (x1 + x2) / 2;
-  const my = (y1 + y2) / 2;
+function unlockNarrationOnce(){
+  if (NARRATION_UNLOCKED) return;
+  NARRATION_UNLOCKED = true;
+  try { synth.cancel(); } catch(_) {}
+  // silent prime
+  try {
+    const u = new SpeechSynthesisUtterance("Narration enabled");
+    u.volume = 0;
+    synth.speak(u);
+  } catch(_) {}
+}
 
-  // perpendicular offset for "curvature"
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const px = -dy;
-  const py = dx;
+function speak(line){
+  if (!synth || MUTED) { try{ synth && synth.cancel(); }catch(_){}; return; }
+  if (!NARRATION_UNLOCKED) return; // autoplay-safe: only after user gesture
 
-  // scale curvature by distance
-  const d = Math.sqrt(dx*dx + dy*dy) || 1;
-  const ox = (px / d) * (d * curve);
-  const oy = (py / d) * (d * curve);
+  try { synth.cancel(); } catch(_) {}
 
-  const cx = mx + ox;
-  const cy = my + oy;
-
-  const pts = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    // Quadratic Bezier: (1-t)^2 P0 + 2(1-t)t C + t^2 P1
-    const xt = (1-t)*(1-t)*x1 + 2*(1-t)*t*cx + t*t*x2;
-    const yt = (1-t)*(1-t)*y1 + 2*(1-t)*t*cy + t*t*y2;
-    pts.push([xt, yt]);
+  const u = new SpeechSynthesisUtterance(String(line));
+  const voices = synth.getVoices();
+  if (!VOICE && voices && voices.length){
+    VOICE = voices.find(v => /en-|English/i.test(v.lang)) || voices[0];
   }
-  return pts;
+  if (!VOICE){
+    synth.onvoiceschanged = () => {
+      const vs = synth.getVoices();
+      VOICE = vs.find(v => /en-|English/i.test(v.lang)) || vs[0];
+    };
+  }
+  if (VOICE) u.voice = VOICE;
+  u.rate = 0.95;
+  u.pitch = 1.0;
+
+  try { synth.speak(u); } catch(_) {}
 }
 
-function upsertRouteSource() {
-  const fc = {
-    type: "FeatureCollection",
-    features: routes.map(r => ({
-      type: "Feature",
-      geometry: { type: "LineString", coordinates: r.coords },
-      properties: { id: r.id, from: r.from, to: r.to, kind: r.kind }
-    }))
-  };
+clearBtn.addEventListener('click', ()=>{ msgs.innerHTML=''; });
+muteBtn.addEventListener('click', ()=>{
+  MUTED = !MUTED;
+  muteBtn.textContent = MUTED ? '🔇 Unmute' : '🔊 Mute';
+  if (MUTED) { try { synth.cancel(); } catch(_){} }
+});
 
-  if (map.getSource("routes")) {
-    map.getSource("routes").setData(fc);
-  } else {
-    map.addSource("routes", { type: "geojson", data: fc });
+/* ---------- Buttons ---------- */
+document.getElementById('btnNormal')?.addEventListener('click', ()=>handleCommand('normal'));
+document.getElementById('btnHub')?.addEventListener('click', ()=>handleCommand('hub dubai'));
+document.getElementById('btnDisrupt')?.addEventListener('click', ()=>handleCommand('disrupt'));
+document.getElementById('btnCorrect')?.addEventListener('click', ()=>handleCommand('correct'));
+document.getElementById('btnAddParis')?.addEventListener('click', ()=>handleCommand('add paris'));
+document.getElementById('btnAddVienna')?.addEventListener('click', ()=>handleCommand('add vienna'));
 
-    // Base routes
+send.addEventListener('click', ()=>handleCommand((input.value||'').trim()));
+input.addEventListener('keydown',(e)=>{ if(e.key==='Enter') handleCommand((input.value||'').trim()); });
+
+/* ---------- Routes + planes ---------- */
+function greatCircle(a,b,n=160){
+  const line = turf.greatCircle([a.lon,a.lat],[b.lon,b.lat],{npoints:n});
+  return line.geometry.coordinates;
+}
+
+let currentNodes = {...NODES};
+let ROUTES = [];            // features
+let ROUTE_MAP = new Map();  // "A-B" -> coords (directional)
+let PLANES = [];
+
+let overlay=null, ctx=null, PLANE_IMG=null, PLANE_READY=false;
+
+function ensureCanvas(){
+  overlay = document.getElementById("planesCanvas");
+  if(!overlay){
+    overlay = document.createElement("canvas");
+    overlay.id = "planesCanvas";
+    overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+    map.getContainer().appendChild(overlay);
+  }
+  ctx = overlay.getContext("2d");
+  resizeCanvas();
+}
+function resizeCanvas(){
+  if(!overlay) return;
+  const base = map.getCanvas(), dpr = window.devicePixelRatio||1;
+  overlay.width  = base.clientWidth * dpr;
+  overlay.height = base.clientHeight * dpr;
+  overlay.style.width  = base.clientWidth + "px";
+  overlay.style.height = base.clientHeight + "px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener("resize", resizeCanvas);
+
+function getArcCoords(A,B){
+  const c = ROUTE_MAP.get(`${A}-${B}`);
+  if (c) return c;
+  const a = currentNodes[A], b = currentNodes[B];
+  if (!a || !b) return [];
+  const coords = greatCircle(a,b,160);
+  ROUTE_MAP.set(`${A}-${B}`, coords);
+  ROUTE_MAP.set(`${B}-${A}`, [...coords].reverse());
+  return coords;
+}
+
+/* Curated route builder:
+   - hub: everyone <-> DXB
+   - plus signature corridors
+*/
+function buildPairsHubPlusSignature(){
+  const pairs = [];
+  const keys = Object.keys(currentNodes).filter(k=>k!==HUB);
+
+  // hub spokes
+  for (const K of keys) pairs.push([K, HUB]);
+
+  // signature corridors (only if both exist)
+  for (const [A,B] of SIGNATURE_CORRIDORS){
+    if (currentNodes[A] && currentNodes[B]) pairs.push([A,B]);
+  }
+
+  // de-dup unordered
+  const seen = new Set();
+  const out = [];
+  for (const [A,B] of pairs){
+    const k = keyPair(A,B);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push([A,B]);
+  }
+  return out;
+}
+
+function rebuildRoutesFromPairs(pairs){
+  ROUTES = [];
+  ROUTE_MAP.clear();
+
+  for (const [A,B] of pairs){
+    const coords = getArcCoords(A,B);
+    if (!coords || coords.length < 2) continue;
+
+    ROUTES.push({
+      type:"Feature",
+      properties:{ id:`${A}-${B}`, A, B },
+      geometry:{ type:"LineString", coordinates: coords }
+    });
+  }
+}
+
+function ensureRouteLayers(){
+  const baseFC = { type:"FeatureCollection", features: ROUTES };
+
+  if(!map.getSource("routes")) map.addSource("routes",{type:"geojson", data: baseFC});
+  else map.getSource("routes").setData(baseFC);
+
+  // Premium, minimal layers: one glow + one base
+  if(!map.getLayer("routes-glow")){
+    map.addLayer({
+      id: "routes-glow",
+      type: "line",
+      source: "routes",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#4dd7ff",
+        "line-opacity": 0.18,
+        "line-width": 2.2,
+        "line-blur": 1.2
+      }
+    });
+  }
+
+  if(!map.getLayer("routes-base")){
     map.addLayer({
       id: "routes-base",
       type: "line",
       source: "routes",
-      filter: ["==", ["get", "kind"], "base"],
+      layout: { "line-cap": "round", "line-join": "round" },
       paint: {
-        "line-width": 2.2,
-        "line-opacity": 0.75
+        "line-color": "#ffffff",
+        "line-opacity": 0.55,
+        "line-width": [
+          "interpolate", ["linear"], ["zoom"],
+          1.5, 0.35,
+          2.5, 0.7,
+          4.0, 1.1,
+          6.0, 1.4
+        ]
       }
-    });
+    }, "routes-glow");
+  }
 
-    // Hub routes
+  // alert (red) and fix (green)
+  if(!map.getSource("alert")) map.addSource("alert",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
+  if(!map.getLayer("alert-red")){
     map.addLayer({
-      id: "routes-hub",
-      type: "line",
-      source: "routes",
-      filter: ["==", ["get", "kind"], "hub"],
-      paint: {
-        "line-width": 2.6,
-        "line-opacity": 0.85
-      }
-    });
-
-    // Reroutes (corrections)
-    map.addLayer({
-      id: "routes-reroute",
-      type: "line",
-      source: "routes",
-      filter: ["==", ["get", "kind"], "reroute"],
-      paint: {
-        "line-width": 3.2,
-        "line-opacity": 0.95
-      }
-    });
-
-    // Disrupted routes highlight (we draw separately as a layer filter by ids)
-    map.addLayer({
-      id: "routes-disrupted",
-      type: "line",
-      source: "routes",
-      filter: ["in", ["get", "id"], ["literal", []]],
-      paint: {
-        "line-width": 4.2,
-        "line-opacity": 0.95
-      }
+      id:"alert-red", type:"line", source:"alert",
+      layout:{ "line-cap":"round","line-join":"round" },
+      paint:{ "line-color":"#ff5a6a","line-opacity":0.95,"line-width":4.6 }
     });
   }
+
+  if(!map.getSource("fix")) map.addSource("fix",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
+  if(!map.getLayer("fix-green")){
+    map.addLayer({
+      id:"fix-green", type:"line", source:"fix",
+      layout:{ "line-cap":"round","line-join":"round" },
+      paint:{ "line-color":"#00d08a","line-opacity":0.95,"line-width":5.2 }
+    });
+  }
+
+  try { map.moveLayer("fix-green"); } catch(_) {}
 }
 
-function setDisruptedRouteLayer(routeIds) {
-  const layerId = "routes-disrupted";
-  if (!map.getLayer(layerId)) return;
-  map.setFilter(layerId, ["in", ["get", "id"], ["literal", routeIds]]);
+function setAlertByPairs(pairs){
+  const feats = [];
+  for (const [A,B] of pairs){
+    const id = `${A}-${B}`;
+    const coords = ROUTE_MAP.get(`${A}-${B}`) || ROUTE_MAP.get(`${B}-${A}`);
+    feats.push({ type:"Feature", properties:{ id }, geometry:{ type:"LineString", coordinates: coords||[] } });
+  }
+  map.getSource("alert")?.setData({type:"FeatureCollection", features: feats});
 }
+function clearAlert(){ map.getSource("alert")?.setData({type:"FeatureCollection",features:[]}); }
 
-function upsertCapitals() {
-  const fc = {
-    type: "FeatureCollection",
-    features: Object.entries(capitals).map(([code, c]) => ({
-      type: "Feature",
-      geometry: { type: "Point", coordinates: c.lngLat },
-      properties: { code, name: c.name }
-    }))
-  };
+function setFixFromPaths(paths){
+  // paths is list of ["A","X","B"] etc -> build legs
+  const feats = [];
+  for (const path of paths){
+    for (let i=0;i<path.length-1;i++){
+      const from = path[i], to = path[i+1];
+      const id = `${from}-${to}`;
+      const coords = getArcCoords(from,to);
+      feats.push({ type:"Feature", properties:{ id }, geometry:{ type:"LineString", coordinates: coords||[] } });
+    }
+  }
+  map.getSource("fix")?.setData({type:"FeatureCollection", features: feats});
+}
+function clearFix(){ map.getSource("fix")?.setData({type:"FeatureCollection",features:[]}); }
+
+/* ---------- Capitals layer (single function, no duplicates) ---------- */
+function upsertCapitals(){
+  const features = Object.entries(currentNodes).map(([id, v]) => ({
+    type: "Feature",
+    properties: { id, name: v.name },
+    geometry: { type: "Point", coordinates: [v.lon, v.lat] }
+  }));
+  const fc = { type:"FeatureCollection", features };
 
   if (map.getSource("capitals")) {
     map.getSource("capitals").setData(fc);
+    return;
+  }
+
+  map.addSource("capitals", { type:"geojson", data: fc });
+
+  map.addLayer({
+    id: "capital-points",
+    type: "circle",
+    source: "capitals",
+    paint: {
+      "circle-radius": 7.5,
+      "circle-color": "#ffd166",
+      "circle-stroke-width": 2,
+      "circle-stroke-color": "#ffffff",
+      "circle-opacity": 0.96
+    }
+  });
+
+  map.addLayer({
+    id: "capital-labels",
+    type: "symbol",
+    source: "capitals",
+    layout: {
+      "text-field": ["get","name"],
+      "text-font": ["Open Sans Regular", "Noto Sans Regular", "Arial Unicode MS Regular"],
+      "text-size": [
+        "interpolate", ["linear"], ["zoom"],
+        1.5, 10,
+        3.0, 12,
+        5.0, 14
+      ],
+      "text-offset": [0, 1.25],
+      "text-anchor": "top",
+      "text-allow-overlap": true
+    },
+    paint: {
+      "text-color": "#ffffff",
+      "text-halo-color": "rgba(0,0,0,.75)",
+      "text-halo-width": 1.4,
+      "text-halo-blur": 0.2
+    }
+  });
+
+  try { map.moveLayer("capital-points"); map.moveLayer("capital-labels"); } catch(_) {}
+}
+
+/* ---------- Planes ---------- */
+const MAX_PLANES = 16; // cap for premium smoothness
+
+function spawnPlane(id, A, B){
+  const coords = getArcCoords(A,B);
+  if (!coords || coords.length < 2) return;
+
+  PLANES.push({
+    id, A, B,
+    path: coords,
+    seg: 0,
+    t: Math.random() * 0.6,
+    speed: 0.85 + Math.random()*0.25,
+    paused: false,
+    affectedKey: null,     // keyPair(A,B) if disrupted
+    reroute: null          // optional reroute polyline (combined)
+  });
+}
+
+function buildPlanesForPairs(pairs){
+  PLANES.length = 0;
+  let idx = 1;
+
+  // sample pairs if too many
+  const sampled = pairs.slice(0, Math.ceil(MAX_PLANES/2));
+  for (const [A,B] of sampled){
+    spawnPlane(`F${idx++}`, A, B);
+    spawnPlane(`F${idx++}`, B, A);
+  }
+}
+
+function prj(lon,lat){ return map.project({lng:lon,lat:lat}); }
+
+function drawPlaneAt(p, theta){
+  const z = map.getZoom();
+  const baseAtZoom = (z <= 2) ? 34 : (z >= 5 ? 56 : 34 + (56 - 34) * ((z - 2) / (5 - 2)));
+  const W = baseAtZoom * PLANE_SIZE_MULT;
+  const H = W;
+
+  // shadow
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(theta);
+  ctx.fillStyle = "rgba(0,0,0,0.22)";
+  ctx.beginPath();
+  ctx.ellipse(0, H*0.18, W*0.40, H*0.16, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+
+  if (PLANE_READY) {
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(theta);
+
+    ctx.shadowColor = "rgba(255,255,220,0.55)";
+    ctx.shadowBlur = 20;
+
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 1.05 + 0.18 * Math.sin(performance.now() / 320);
+    ctx.drawImage(PLANE_IMG, -W/2, -H/2, W, H);
+
+    ctx.globalAlpha = 1.0;
+    ctx.globalCompositeOperation = "source-over";
+    ctx.restore();
   } else {
-    map.addSource("capitals", { type: "geojson", data: fc });
-    map.addLayer({
-      id: "capitals",
-      type: "circle",
-      source: "capitals",
-      paint: {
-        "circle-radius": 5.5,
-        "circle-opacity": 0.92
-      }
-    });
-    map.addLayer({
-      id: "capitals-label",
-      type: "symbol",
-      source: "capitals",
-      layout: {
-        "text-field": ["get", "name"],
-        "text-size": 12,
-        "text-offset": [0, 1.2],
-        "text-anchor": "top"
-      },
-      paint: {
-        "text-opacity": 0.92
-      }
-    });
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(theta);
+    ctx.fillStyle="#ffd166";
+    ctx.beginPath(); ctx.moveTo(0,-12); ctx.lineTo(9,12); ctx.lineTo(-9,12); ctx.closePath(); ctx.fill();
+    ctx.restore();
   }
 }
 
-// ------------------------ Build networks ------------------------
-function routeId(from, to, kind) {
-  return `${kind}:${from}-${to}`;
-}
+function advancePlane(PL, dt){
+  if (PL.paused) return;
 
-function buildAllToAllBaseRoutes() {
-  const codes = Object.keys(capitals);
-  const out = [];
+  const path = PL.reroute || PL.path;
+  if (!path || path.length < 2) return;
 
-  for (let i = 0; i < codes.length; i++) {
-    for (let j = i + 1; j < codes.length; j++) {
-      const a = codes[i], b = codes[j];
-      const A = capitals[a].lngLat;
-      const B = capitals[b].lngLat;
+  const pxPerSec = 88 * PL.speed * (0.9 + (map.getZoom() - 2) * 0.12);
 
-      const coordsAB = makeArc(A, B, 90, 0.14);
-      const coordsBA = makeArc(B, A, 90, 0.14);
+  const a = path[PL.seg];
+  const b = path[PL.seg + 1] || a;
+  const aP = prj(a[0], a[1]);
+  const bP = prj(b[0], b[1]);
 
-      out.push({ id: routeId(a, b, "base"), from: a, to: b, kind: "base", coords: coordsAB });
-      out.push({ id: routeId(b, a, "base"), from: b, to: a, kind: "base", coords: coordsBA });
-    }
-  }
-  return out;
-}
+  const segLen = Math.max(1, Math.hypot(bP.x - aP.x, bP.y - aP.y));
+  let step = (pxPerSec * dt) / segLen;
+  step = Math.max(step, 0.004);
 
-function buildHubNetwork(hubCode) {
-  const codes = Object.keys(capitals).filter(c => c !== hubCode);
-  const out = [];
+  PL.t += step;
 
-  for (const c of codes) {
-    const A = capitals[c].lngLat;
-    const H = capitals[hubCode].lngLat;
-    out.push({
-      id: routeId(c, hubCode, "hub"),
-      from: c, to: hubCode, kind: "hub",
-      coords: makeArc(A, H, 90, 0.12)
-    });
-    out.push({
-      id: routeId(hubCode, c, "hub"),
-      from: hubCode, to: c, kind: "hub",
-      coords: makeArc(H, A, 90, 0.12)
-    });
-  }
-  return out;
-}
-
-function addReroutesFromPaths(paths) {
-  const out = [];
-  for (const path of paths) {
-    // path is like ["DXB","ROM","LON"], create legs: DXB->ROM and ROM->LON (both directions for plane reroute? we create directed legs only)
-    for (let i = 0; i < path.length - 1; i++) {
-      const from = path[i], to = path[i + 1];
-      if (!capitals[from] || !capitals[to]) continue;
-
-      const A = capitals[from].lngLat;
-      const B = capitals[to].lngLat;
-
-      out.push({
-        id: routeId(from, to, "reroute"),
-        from, to, kind: "reroute",
-        coords: makeArc(A, B, 90, 0.10)
-      });
-    }
-  }
-  return out;
-}
-
-// ------------------------ Planes ------------------------
-function makePlane(route) {
-  return {
-    id: `plane:${Math.random().toString(16).slice(2)}`,
-    routeId: route.id,
-    t: Math.random(),                  // progress 0..1
-    speed: 0.0009 + Math.random()*0.0012  // per frame-ish
-  };
-}
-
-function rebuildPlanesForRoutes(maxPlanes = 26) {
-  planes = [];
-  const flyable = routes.filter(r => r.kind !== "reroute"); // planes originate on base/hub; reroutes used when corrected
-  if (!flyable.length) return;
-
-  const n = Math.min(maxPlanes, flyable.length);
-  for (let i = 0; i < n; i++) {
-    const r = flyable[i % flyable.length];
-    planes.push(makePlane(r));
-  }
-}
-
-function getRouteById(id) {
-  return routes.find(r => r.id === id);
-}
-
-function pointAlong(coords, t) {
-  const n = coords.length;
-  if (n === 0) return null;
-  const idx = clamp01(t) * (n - 1);
-  const i0 = Math.floor(idx);
-  const i1 = Math.min(n - 1, i0 + 1);
-  const frac = idx - i0;
-
-  const p0 = coords[i0];
-  const p1 = coords[i1];
-  return [lerp(p0[0], p1[0], frac), lerp(p0[1], p1[1], frac)];
-}
-
-function headingAlong(coords, t) {
-  const n = coords.length;
-  if (n < 2) return 0;
-  const idx = clamp01(t) * (n - 1);
-  const i0 = Math.floor(idx);
-  const i1 = Math.min(n - 1, i0 + 1);
-  const p0 = coords[i0];
-  const p1 = coords[i1];
-  const dx = p1[0] - p0[0];
-  const dy = p1[1] - p0[1];
-  return Math.atan2(dy, dx);
-}
-
-function resizeOverlay() {
-  const rect = map.getCanvas().getBoundingClientRect();
-  overlay.width = Math.round(rect.width * devicePixelRatio);
-  overlay.height = Math.round(rect.height * devicePixelRatio);
-  overlay.style.width = `${rect.width}px`;
-  overlay.style.height = `${rect.height}px`;
-  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-}
-
-function drawPlanes() {
-  const w = overlay.clientWidth;
-  const h = overlay.clientHeight;
-  ctx.clearRect(0, 0, w, h);
-
-  for (const p of planes) {
-    const r = getRouteById(p.routeId);
-    if (!r) continue;
-
-    const paused = pausedRouteIds.has(p.routeId);
-    if (!paused) {
-      p.t += p.speed;
-      if (p.t > 1) p.t = 0;
-    }
-
-    const lngLat = pointAlong(r.coords, p.t);
-    if (!lngLat) continue;
-
-    const pt = map.project(lngLat);
-    const ang = headingAlong(r.coords, p.t);
-
-    // draw sprite
-    if (planeImgReady) {
-      ctx.save();
-      ctx.translate(pt.x, pt.y);
-      ctx.rotate(ang);
-      const s = 18;
-      ctx.drawImage(planeImg, -s/2, -s/2, s, s);
-      ctx.restore();
-    } else {
-      // fallback dot
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 3, 0, Math.PI*2);
-      ctx.fill();
+  while (PL.t >= 1) {
+    PL.seg += 1;
+    PL.t -= 1;
+    if (PL.seg >= path.length - 1) {
+      PL.seg = 0;
+      PL.t = Math.random() * 0.2;
+      break;
     }
   }
 }
 
-// ------------------------ Dashboard (simple predictive view) ------------------------
-const dashBody = document.getElementById("dashBody");
-const dashNote = document.getElementById("dashNote");
+function drawPlanes(){
+  ctx.clearRect(0,0,overlay.width,overlay.height);
+  const now = performance.now()/1000;
 
-function computeDashboard() {
-  const totalPlanes = planes.length;
-  let pausedPlanes = 0;
-  for (const p of planes) if (pausedRouteIds.has(p.routeId)) pausedPlanes++;
+  for(const PL of PLANES){
+    const path = PL.reroute || PL.path;
+    if (!path || path.length < 2) continue;
 
-  const activeRoutes = routes.filter(r => r.kind !== "reroute").length;
-  const reroutes = routes.filter(r => r.kind === "reroute").length;
+    const a = path[PL.seg];
+    const b = path[PL.seg + 1] || a;
 
-  // simple heuristics: “delay index” scales with paused
-  const delayIndex = totalPlanes ? Math.round((pausedPlanes / totalPlanes) * 100) : 0;
-  const flowIndex = Math.max(0, 100 - delayIndex);
+    const aP = prj(a[0],a[1]);
+    const bP = prj(b[0],b[1]);
 
-  return [
-    ["Flights (active)", `${totalPlanes - pausedPlanes}/${totalPlanes}`],
-    ["Paused flights", `${pausedPlanes}`],
-    ["Routes (base/hub)", `${activeRoutes}`],
-    ["Corrections (reroutes)", `${reroutes}`],
-    ["Flow index", `${flowIndex}`],
-    ["Delay index", `${delayIndex}`]
-  ];
+    const bob = Math.sin(now*1.4 + (PL.id.charCodeAt(0)%7))*1.6;
+    const x = aP.x + (bP.x-aP.x)*PL.t;
+    const y = aP.y + (bP.y-aP.y)*PL.t + bob;
+
+    const bearing = turf.bearing([a[0],a[1]], [b[0],b[1]]);
+    let theta = (bearing * Math.PI) / 180;
+
+    drawPlaneAt({x,y}, theta);
+  }
 }
 
-function renderDashboard() {
-  dashBody.innerHTML = "";
-  const rows = computeDashboard();
-  for (const [k, v] of rows) {
+/* ---------- Animation loop ---------- */
+let __lastTS = performance.now();
+function tick(){
+  if(ctx){
+    const now = performance.now();
+    const dt = Math.min(0.05,(now-__lastTS)/1000); __lastTS = now;
+    for(const PL of PLANES) advancePlane(PL, dt);
+    drawPlanes();
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ---------- Dashboard ---------- */
+function pathLengthKm(coords){
+  if (!coords || coords.length < 2) return 0;
+  const feature = { type:"Feature", geometry:{ type:"LineString", coordinates: coords } };
+  return turf.length(feature, { units:"kilometers" }) || 0;
+}
+
+function renderStats(){
+  const tbody = document.querySelector("#statsTable tbody");
+  if(!tbody) return;
+  tbody.innerHTML = "";
+
+  const caps = Object.keys(currentNodes);
+  const rows = {};
+  for(const k of caps){
+    rows[k] = { label: currentNodes[k].name, flights:0, active:0, paused:0, tonnage_t:0, time_h:0, fuel_t:0 };
+  }
+
+  for(const PL of PLANES){
+    const A = PL.A, B = PL.B;
+    if(!rows[A] || !rows[B]) continue;
+
+    rows[A].flights++; rows[B].flights++;
+    if (PL.paused){ rows[A].paused++; rows[B].paused++; continue; }
+    rows[A].active++; rows[B].active++;
+
+    const usedPath = PL.reroute || PL.path;
+    const distKm = pathLengthKm(usedPath);
+    const timeHr = distKm / AIRSPEED_KMPH;
+    const fuelKg = FUEL_BURN_KG_PER_KM * distKm;
+
+    rows[A].tonnage_t += AIRCRAFT_CAPACITY_TONS;
+    rows[B].tonnage_t += AIRCRAFT_CAPACITY_TONS;
+
+    rows[A].time_h += timeHr; rows[B].time_h += timeHr;
+    rows[A].fuel_t += fuelKg/1000; rows[B].fuel_t += fuelKg/1000;
+  }
+
+  for(const k of caps){
+    const r = rows[k];
     const tr = document.createElement("tr");
-    const td1 = document.createElement("td");
-    const td2 = document.createElement("td");
-    td1.textContent = k;
-    td2.textContent = v;
-    tr.appendChild(td1);
-    tr.appendChild(td2);
-    dashBody.appendChild(tr);
+    tr.innerHTML = `
+      <td>${escapeHTML(r.label)}</td>
+      <td>${r.flights}</td>
+      <td class="pos">+${r.active}</td>
+      <td class="neg">-${r.paused}</td>
+      <td>${r.tonnage_t.toFixed(0)}</td>
+      <td>${r.time_h.toFixed(1)}</td>
+      <td>${r.fuel_t.toFixed(2)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+/* ---------- Camera fit ---------- */
+function fitToNodes(){
+  const b = new maplibregl.LngLatBounds();
+  Object.values(currentNodes).forEach(c=>b.extend([c.lon,c.lat]));
+  map.fitBounds(b, {
+    padding: { top: 90, left: 90, right: 460, bottom: 90 },
+    duration: 950,
+    maxZoom: 3.8
+  });
+}
+
+/* ---------- State + Scenarios ---------- */
+let MODE = "hub"; // "hub" or "normal"
+let DISRUPTED = false;
+let scenarioIndex = -1;
+
+function setModeBadge(){
+  modeBadge.textContent = (MODE === "hub") ? "Hub Dubai" : "Normal";
+}
+
+function setScenarioPill(text){
+  scenarioPill.textContent = text;
+}
+
+function applyNetwork(){
+  // network depends on mode; we still keep curated look
+  let pairs;
+  if (MODE === "hub"){
+    pairs = buildPairsHubPlusSignature();
+  } else {
+    // "Normal" = curated corridors only (still premium), not all-to-all
+    pairs = [...SIGNATURE_CORRIDORS].filter(([A,B])=>currentNodes[A] && currentNodes[B]);
+    // ensure at least some spokes to keep density readable
+    if (currentNodes[HUB]) {
+      for (const k of Object.keys(currentNodes)) if (k!==HUB) pairs.push([k,HUB]);
+    }
+    // de-dup
+    const seen = new Set(); const out=[];
+    for (const [A,B] of pairs){ const k=keyPair(A,B); if(seen.has(k)) continue; seen.add(k); out.push([A,B]); }
+    pairs = out;
   }
 
-  const scenario = (activeScenarioIndex >= 0) ? SCENARIOS[activeScenarioIndex] : null;
-  dashNote.textContent = scenario
-    ? `Scenario: ${scenario.name}`
-    : "Scenario: Normal operations";
+  rebuildRoutesFromPairs(pairs);
+  ensureRouteLayers();
+  buildPlanesForPairs(pairs);
+  upsertCapitals();
+  fitToNodes();
+  setModeBadge();
+  renderStats();
 }
 
-// ------------------------ Actions ------------------------
-function setNormal() {
-  pausedRouteIds.clear();
-  setDisruptedRouteLayer([]);
-  activeScenarioIndex = -1;
-
-  routes = buildAllToAllBaseRoutes();
-  upsertRouteSource();
-  rebuildPlanesForRoutes();
-  renderDashboard();
-
-  log("✅ Normal: global all-to-all network active.");
-  speak("Normal operations. Global network is active.");
-  fitToVisibleNetwork(80);
+function clearDisruptionState(){
+  DISRUPTED = false;
+  for (const p of PLANES){ p.paused=false; p.affectedKey=null; p.reroute=null; p.seg=0; p.t=Math.random()*0.2; }
+  clearAlert();
+  clearFix();
 }
 
-function setHubDubai() {
-  pausedRouteIds.clear();
-  setDisruptedRouteLayer([]);
-  activeScenarioIndex = -1;
-
-  if (!capitals.DXB) {
-    log("❌ Dubai not present; cannot hub.");
+function startDisrupt(){
+  if (DISRUPTED){
+    pushMsg("A disruption is already active. Apply Correct, or switch mode.");
     return;
   }
+  scenarioIndex = (scenarioIndex + 1) % SCENARIOS.length;
+  const sc = SCENARIOS[scenarioIndex];
 
-  routes = buildHubNetwork("DXB");
-  upsertRouteSource();
-  rebuildPlanesForRoutes();
-  renderDashboard();
+  DISRUPTED = true;
+  setScenarioPill(sc.name);
 
-  log("🛫 Hub Dubai: star network via Dubai.");
-  speak("Hub mode enabled. Dubai is the central hub.");
-  fitToVisibleNetwork(90);
-}
+  // highlight disrupted corridors
+  setAlertByPairs(sc.disruptPairs);
+  clearFix();
 
-function nextDisrupt() {
-  // move to next scenario
-  activeScenarioIndex = (activeScenarioIndex + 1) % SCENARIOS.length;
-  const sc = SCENARIOS[activeScenarioIndex];
-
-  // Only disrupt base/hub routes that exist
-  pausedRouteIds.clear();
-  const disruptedIds = [];
-
-  for (const [a, b] of sc.disruptPairs) {
-    // pause both directions if present
-    const ids = [
-      routeId(a, b, "base"), routeId(b, a, "base"),
-      routeId(a, b, "hub"),  routeId(b, a, "hub")
-    ];
-
-    for (const id of ids) {
-      const exists = routes.some(r => r.id === id);
-      if (exists) {
-        pausedRouteIds.add(id);
-        disruptedIds.push(id);
-      }
+  const disruptedKeys = new Set(sc.disruptPairs.map(([A,B])=>keyPair(A,B)));
+  for (const PL of PLANES){
+    const k = keyPair(PL.A, PL.B);
+    if (disruptedKeys.has(k)){
+      PL.paused = true;
+      PL.affectedKey = k;
     }
   }
 
-  setDisruptedRouteLayer(disruptedIds);
-
-  log(`⚠️ Disrupt (Scenario ${activeScenarioIndex + 1}/${SCENARIOS.length}): ${sc.name}`);
-  speak(sc.narrationDisrupt);
-  renderDashboard();
+  pushMsg(`🟥 Disruption: ${sc.name}. Impacted corridors paused.`);
+  speak(sc.disruptNarration);
+  renderStats();
 }
 
-function correctScenario() {
-  if (activeScenarioIndex < 0) {
-    log("ℹ️ No active disruption. Use Disrupt first.");
-    speak("No disruption is active. Trigger a disruption first.");
+function applyCorrect(){
+  if (!DISRUPTED){
+    pushMsg("No active disruption. Click Disrupt first.");
     return;
   }
+  const sc = SCENARIOS[scenarioIndex];
 
-  const sc = SCENARIOS[activeScenarioIndex];
+  // show fix paths in green
+  setFixFromPaths(sc.correctionPaths);
+  clearAlert();
 
-  // remove old reroutes
-  routes = routes.filter(r => r.kind !== "reroute");
-
-  // add reroutes for this scenario
-  const newReroutes = addReroutesFromPaths(sc.correctionPaths);
-  routes.push(...newReroutes);
-
-  // Move any paused planes onto first available reroute that starts at their route.from
-  // fallback: just unpause them.
-  const rerouteStarts = new Map(); // fromCode -> [routeIds...]
-  for (const r of newReroutes) {
-    if (!rerouteStarts.has(r.from)) rerouteStarts.set(r.from, []);
-    rerouteStarts.get(r.from).push(r.id);
-  }
-
-  for (const p of planes) {
-    if (!pausedRouteIds.has(p.routeId)) continue;
-    const currentRoute = getRouteById(p.routeId);
-    if (!currentRoute) continue;
-
-    const candidates = rerouteStarts.get(currentRoute.from) || [];
-    if (candidates.length) {
-      p.routeId = candidates[Math.floor(Math.random() * candidates.length)];
-      p.t = 0; // start reroute
+  // Build combined polylines for each correction path (A->...->B)
+  // Then reassign affected flights whose endpoints match the start/end of a correction path.
+  const combined = [];
+  for (const path of sc.correctionPaths){
+    const forward = [];
+    for (let i=0;i<path.length-1;i++){
+      const seg = getArcCoords(path[i], path[i+1]);
+      if (!seg || seg.length<2) continue;
+      if (i===0) forward.push(...seg);
+      else forward.push(...seg.slice(1));
+    }
+    if (forward.length >= 2){
+      combined.push({ from: path[0], to: path[path.length-1], coords: forward, back: [...forward].reverse() });
     }
   }
 
-  // now unpause disrupted routes (corridor restored by correction)
-  pausedRouteIds.clear();
-  setDisruptedRouteLayer([]);
+  for (const PL of PLANES){
+    if (!PL.affectedKey) continue;
 
-  upsertRouteSource();
-  renderDashboard();
+    // match based on endpoints first (best UX)
+    const match = combined.find(c => (c.from===PL.A && c.to===PL.B) || (c.from===PL.B && c.to===PL.A));
+    if (match){
+      PL.reroute = (match.from===PL.A && match.to===PL.B) ? match.coords : match.back;
+      PL.seg = 0; PL.t = 0;
+    }
 
-  log(`✅ Correct: applied correction for "${sc.name}"`);
-  speak(sc.narrationCorrect);
-}
-
-// ------------------------ Add cities ------------------------
-function addCity(city) {
-  if (capitals[city.code]) {
-    log(`ℹ️ ${city.name} already exists.`);
-    return;
+    PL.paused = false;
+    PL.affectedKey = null;
   }
-  capitals[city.code] = { name: city.name, lngLat: city.lngLat };
 
-  upsertCapitals();
-
-  // rebuild base network if we are in normal mode (all-to-all), else keep current topology and just refit
-  // For simplicity: if we're in hub mode, rebuild hub; if normal, rebuild all-to-all.
-  const inHub = routes.some(r => r.kind === "hub");
-  const hubCode = "DXB";
-
-  routes = inHub ? buildHubNetwork(hubCode) : buildAllToAllBaseRoutes();
-  upsertRouteSource();
-  rebuildPlanesForRoutes();
-  renderDashboard();
-
-  log(`➕ Added city: ${city.name}`);
-  speak(`${city.name} added to the network.`);
-  fitToVisibleNetwork(90);
+  DISRUPTED = false;
+  pushMsg(`🟩 Correction applied: ${sc.name}. Green reroutes active.`);
+  speak(sc.correctNarration);
+  renderStats();
 }
 
-// ------------------------ Chat parsing ------------------------
-function handleCommand(raw) {
-  const cmd = raw.trim().toLowerCase();
-
-  if (!cmd) return;
-
-  if (cmd === "normal") return setNormal();
-  if (cmd === "disrupt") return nextDisrupt();
-  if (cmd === "correct") return correctScenario();
-
-  if (cmd === "add paris" || cmd === "paris") return addCity(ADD_PARIS);
-  if (cmd === "add vienna" || cmd === "vienna") return addCity(ADD_VIENNA);
-
-  if (cmd === "hub dubai" || cmd === "dubai hub" || cmd === "hub dxb") return setHubDubai();
-
-  log(`❓ Unknown command: "${raw}". Try: Disrupt, Correct, Normal, Add Paris, Add Vienna, Hub Dubai`);
-  speak("Command not recognized.");
+function setHubDubai(){
+  unlockNarrationOnce();
+  clearDisruptionState();
+  MODE = "hub";
+  setScenarioPill("Normal operations");
+  applyNetwork();
+  pushMsg("🟨 Hub Dubai enabled. Network is now intentionally hub-and-spoke with signature corridors.");
+  speak("Hub Dubai enabled. Network operating in hub and spoke mode.");
 }
 
-// ------------------------ Wire up UI ------------------------
-document.getElementById("btnNormal").addEventListener("click", setNormal);
-document.getElementById("btnDisrupt").addEventListener("click", nextDisrupt);
-document.getElementById("btnCorrect").addEventListener("click", correctScenario);
-
-document.getElementById("btnAddParis").addEventListener("click", () => addCity(ADD_PARIS));
-document.getElementById("btnAddVienna").addEventListener("click", () => addCity(ADD_VIENNA));
-document.getElementById("btnHubDubai").addEventListener("click", setHubDubai);
-
-document.getElementById("btnSend").addEventListener("click", () => {
-  const v = inputEl.value;
-  inputEl.value = "";
-  log(`> ${v}`);
-  handleCommand(v);
-});
-
-inputEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    const v = inputEl.value;
-    inputEl.value = "";
-    log(`> ${v}`);
-    handleCommand(v);
-  }
-});
-
-// ------------------------ Render loop ------------------------
-function frame() {
-  drawPlanes();
-  renderDashboard();
-  requestAnimationFrame(frame);
+function setNormal(){
+  unlockNarrationOnce();
+  clearDisruptionState();
+  MODE = "normal";
+  setScenarioPill("Normal operations");
+  applyNetwork();
+  pushMsg("🟦 Normal operations. Curated global corridors active (premium view).");
+  speak("Normal operations. Curated global corridors active.");
 }
 
-// ------------------------ Initialize ------------------------
-map.on("load", () => {
-  upsertCapitals();
+function addCity(code){
+  const C = (code||"").toUpperCase();
+  const node = NEW_CITIES[C];
+  if (!node){ pushMsg(`Unknown city: ${code}`); return; }
+  if (currentNodes[C]){ pushMsg(`${node.name} is already added.`); return; }
 
-  // start in normal mode (all-to-all global)
-  routes = buildAllToAllBaseRoutes();
-  upsertRouteSource();
+  currentNodes = { ...currentNodes, [C]: node };
+  clearDisruptionState();
+  applyNetwork();
 
-  rebuildPlanesForRoutes();
-  renderDashboard();
+  pushMsg(`➕ Added ${node.name}. Network recomputed and camera refit.`);
+  speak(`${node.name} added. Network recomputed.`);
+}
 
-  resizeOverlay();
-  window.addEventListener("resize", resizeOverlay);
-  map.on("resize", resizeOverlay);
+/* ---------- Command handler ---------- */
+function handleCommand(raw){
+  const cmd = (raw||'').trim();
+  if(!cmd) return;
 
-  log("🟢 Loaded. Commands: Disrupt, Correct, Normal, Add Paris, Add Vienna, Hub Dubai");
-  fitToVisibleNetwork(90);
-  frame();
+  unlockNarrationOnce();
+  pushMsg(cmd,'user');
+  if (input) input.value = "";
+
+  const k = cmd.toLowerCase();
+
+  if (k === "normal") setNormal();
+  else if (k === "hub dubai" || k === "hub" || k === "dubai hub") setHubDubai();
+  else if (k === "disrupt") startDisrupt();
+  else if (k === "correct") applyCorrect();
+  else if (k === "add paris" || k === "paris") addCity("PAR");
+  else if (k === "add vienna" || k === "vienna") addCity("VIE");
+  else pushMsg("Valid commands: Normal, Hub Dubai, Disrupt, Correct, Add Paris, Add Vienna.");
+}
+
+/* ---------- Boot ---------- */
+map.on("load", async ()=>{
+  map.on("error", (e)=>{ try{ console.error("Map error:", e && e.error || e); }catch(_){} });
+
+  ensureCanvas();
+
+  PLANE_IMG = new Image();
+  PLANE_IMG.onload = ()=>{ PLANE_READY = true; };
+  PLANE_IMG.onerror = ()=>{ PLANE_READY = false; };
+  PLANE_IMG.src = PLANE_IMG_SRC + "?v=" + Date.now();
+
+  // Default: premium hub mode
+  MODE = "hub";
+  applyNetwork();
+
+  pushMsg("Ready. Try: Hub Dubai, Disrupt, Correct, Normal, Add Paris, Add Vienna.");
+  // speech will begin only after first click/enter due to autoplay rules
+
+  requestAnimationFrame(tick);
+
+  // keep stats fresh (optional, lightweight)
+  setInterval(renderStats, 1200);
 });
 
