@@ -1,14 +1,3 @@
-/* =========================
-REPLACE ENTIRE script.js WITH THIS
-Premium + performant + intelligent:
-- Curated global network (not all-to-all) so it looks intentional
-- Default = Hub Dubai (beautiful, readable)
-- 3 disruption scenarios (cycle) + smart corrections (reroute legs)
-- Planes capped for performance
-- Fixes speech autoplay via gesture unlock
-- Removes duplicate upsertCapitals bug
-========================= */
-
 const STYLE_URL = "style.json";
 
 /* ---------- Map init (global view) ---------- */
@@ -19,11 +8,11 @@ const PLANE_IMG_SRC = "airplane_topview.png";
 const PLANE_SIZE_MULT = 1.05;
 
 /* ---------- Ops assumptions ---------- */
-const AIRCRAFT_CAPACITY_TONS = 18;     // widebody-ish for global vibe
+const AIRCRAFT_CAPACITY_TONS = 18;
 const AIRSPEED_KMPH = 870;
 const FUEL_BURN_KG_PER_KM = 3.1;
 
-/* ---------- Cities (premium global set) ---------- */
+/* ---------- Cities ---------- */
 const NODES = {
   DXB: { name:"Dubai",      lon:55.2708,  lat:25.2048 },
   FRA: { name:"Frankfurt",  lon:8.6821,   lat:50.1109 },
@@ -40,35 +29,23 @@ const NEW_CITIES = {
   VIE: { name:"Vienna", lon:16.3738, lat:48.2082 }
 };
 
-/* ---------- Network design (curated, premium) ----------
-We avoid all-to-all clutter. We use:
-- Hub Dubai star (default)
-- A few signature “premium corridors” that look intelligent
-*/
 const HUB = "DXB";
-
-// signature corridors (unordered pairs)
 const SIGNATURE_CORRIDORS = [
-  ["LON","NYC"],   // transatlantic
-  ["FRA","ROM"],   // europe corridor
-  ["HKG","TYO"],   // east asia corridor
-  ["DXB","HKG"],   // hub to asia
-  ["DXB","LON"],   // hub to europe
-  ["NYC","CHI"]    // domestic
+  ["LON","NYC"],
+  ["FRA","ROM"],
+  ["HKG","TYO"],
+  ["DXB","HKG"],
+  ["DXB","LON"],
+  ["NYC","CHI"]
 ];
 
-/* ---------- Scenarios (cycle) ----------
-Each scenario:
-- disruptPairs: unordered pairs (pause both directions)
-- correctionPaths: list of paths (A->...->B) as legs, shown green
-*/
 const SCENARIOS = [
   {
     name: "North Atlantic jetstream turbulence",
     disruptPairs: [["LON","NYC"]],
     correctionPaths: [
-      ["LON","FRA","NYC"],    // Europe hop to shift altitude corridor
-      ["NYC","CHI","LON"]     // alternate pattern (visual richness)
+      ["LON","FRA","NYC"],
+      ["NYC","CHI","LON"]
     ],
     disruptNarration:
       "Disruption detected. North Atlantic turbulence is forcing capacity reductions on the London to New York corridor. Impacted flights are paused.",
@@ -90,9 +67,7 @@ const SCENARIOS = [
   {
     name: "East Asia corridor congestion",
     disruptPairs: [["HKG","TYO"]],
-    correctionPaths: [
-      ["HKG","DXB","TYO"]
-    ],
+    correctionPaths: [["HKG","DXB","TYO"]],
     disruptNarration:
       "Disruption detected. East Asia corridor congestion is rising between Hong Kong and Tokyo. Affected flights are paused.",
     correctNarration:
@@ -102,9 +77,6 @@ const SCENARIOS = [
 
 /* ---------- Utilities ---------- */
 function escapeHTML(s){ return String(s).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
-function nowStamp(){ return new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
-
-// unordered key helper
 function keyPair(A,B){ return [A,B].sort().join("-"); }
 
 /* ---------- Map ---------- */
@@ -119,80 +91,98 @@ const map = new maplibregl.Map({
 });
 map.addControl(new maplibregl.NavigationControl({visualizePitch:false}),"top-left");
 
-/* ---------- UI elements ---------- */
-const msgs = document.getElementById('msgs');
-const input = document.getElementById('chatInput');
-const send  = document.getElementById('chatSend');
-const muteBtn = document.getElementById('muteBtn');
-const clearBtn = document.getElementById('clearBtn');
-const modeBadge = document.getElementById('modeBadge');
+/* ---------- UI refs ---------- */
 const scenarioPill = document.getElementById('scenarioPill');
+const statsEl = document.getElementById('stats');
+const toastEl = document.getElementById('toast');
 
-function pushMsg(t, kind='system'){
-  const d = document.createElement('div');
-  d.className = `msg ${kind}`;
-  d.innerHTML = `${escapeHTML(t)}<small>${nowStamp()}</small>`;
-  msgs.appendChild(d);
-  msgs.scrollTop = msgs.scrollHeight + 200;
+/* ---------- Toast (replaces left panel chatter) ---------- */
+let toastTimer = null;
+function toast(msg, holdMs = 2600){
+  if (!toastEl) return;
+  toastEl.innerHTML = `${escapeHTML(msg)}<small>Use buttons: Hub Dubai → Disrupt → Correct → Normal</small>`;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=> {
+    // restore baseline hint
+    toastEl.innerHTML = `Use the top buttons to drive the simulation: <b>Hub Dubai</b>, <b>Disrupt</b>, <b>Correct</b>, <b>Normal</b>.
+      <small>Tip: click anywhere once to enable narration (browser policy). Then press “Narration”.</small>`;
+  }, holdMs);
 }
 
-/* ---------- Speech (gesture unlock) ---------- */
+/* ---------- Speech (more reliable) ---------- */
 const synth = window.speechSynthesis;
-let MUTED=false, VOICE=null, NARRATION_UNLOCKED=false;
+let MUTED = true;                  // start muted to avoid “it didn’t speak” confusion
+let VOICE = null;
+let NARRATION_UNLOCKED = false;
+let PENDING_SPEAK = null;
 
 function unlockNarrationOnce(){
   if (NARRATION_UNLOCKED) return;
   NARRATION_UNLOCKED = true;
-  try { synth.cancel(); } catch(_) {}
-  // silent prime
-  try {
-    const u = new SpeechSynthesisUtterance("Narration enabled");
-    u.volume = 0;
-    synth.speak(u);
-  } catch(_) {}
+
+  // Prime voices on some browsers (no volume “dummy” is often blocked; so just fetch voices)
+  try { synth.getVoices(); } catch(_) {}
+}
+
+function chooseVoice(){
+  const voices = (synth && synth.getVoices) ? synth.getVoices() : [];
+  if (!voices || !voices.length) return null;
+  return voices.find(v => /en-|English/i.test(v.lang)) || voices[0];
+}
+
+// When voices load async, retry the last line
+if (synth) {
+  synth.onvoiceschanged = () => {
+    if (!VOICE) VOICE = chooseVoice();
+    if (PENDING_SPEAK) {
+      const line = PENDING_SPEAK;
+      PENDING_SPEAK = null;
+      speak(line);
+    }
+  };
 }
 
 function speak(line){
-  if (!synth || MUTED) { try{ synth && synth.cancel(); }catch(_){}; return; }
-  if (!NARRATION_UNLOCKED) return; // autoplay-safe: only after user gesture
+  if (!synth) return;
+  if (!NARRATION_UNLOCKED) { PENDING_SPEAK = line; return; } // wait for first gesture
+  if (MUTED) return;
 
   try { synth.cancel(); } catch(_) {}
 
+  if (!VOICE) VOICE = chooseVoice();
+  if (!VOICE) { PENDING_SPEAK = line; return; } // voices not ready yet
+
   const u = new SpeechSynthesisUtterance(String(line));
-  const voices = synth.getVoices();
-  if (!VOICE && voices && voices.length){
-    VOICE = voices.find(v => /en-|English/i.test(v.lang)) || voices[0];
-  }
-  if (!VOICE){
-    synth.onvoiceschanged = () => {
-      const vs = synth.getVoices();
-      VOICE = vs.find(v => /en-|English/i.test(v.lang)) || vs[0];
-    };
-  }
-  if (VOICE) u.voice = VOICE;
+  u.voice = VOICE;
   u.rate = 0.95;
   u.pitch = 1.0;
 
   try { synth.speak(u); } catch(_) {}
 }
 
-clearBtn.addEventListener('click', ()=>{ msgs.innerHTML=''; });
-muteBtn.addEventListener('click', ()=>{
+// Unlock narration on ANY first click/tap (not only on buttons)
+document.addEventListener("pointerdown", unlockNarrationOnce, { once:true });
+
+/* Narration toggle button */
+const btnMute = document.getElementById("btnMute");
+function renderNarrationBtn(){
+  if (!btnMute) return;
+  btnMute.textContent = MUTED ? "🔇 Narration" : "🔊 Narration";
+}
+btnMute?.addEventListener("click", ()=>{
+  unlockNarrationOnce();
   MUTED = !MUTED;
-  muteBtn.textContent = MUTED ? '🔇 Unmute' : '🔊 Mute';
-  if (MUTED) { try { synth.cancel(); } catch(_){} }
+  renderNarrationBtn();
+  if (MUTED) { try { synth.cancel(); } catch(_){}; toast("Narration muted."); }
+  else { toast("Narration enabled."); speak("Narration enabled."); }
 });
+renderNarrationBtn();
 
-/* ---------- Buttons ---------- */
-document.getElementById('btnNormal')?.addEventListener('click', ()=>handleCommand('normal'));
-document.getElementById('btnHub')?.addEventListener('click', ()=>handleCommand('hub dubai'));
-document.getElementById('btnDisrupt')?.addEventListener('click', ()=>handleCommand('disrupt'));
-document.getElementById('btnCorrect')?.addEventListener('click', ()=>handleCommand('correct'));
-document.getElementById('btnAddParis')?.addEventListener('click', ()=>handleCommand('add paris'));
-document.getElementById('btnAddVienna')?.addEventListener('click', ()=>handleCommand('add vienna'));
-
-send.addEventListener('click', ()=>handleCommand((input.value||'').trim()));
-input.addEventListener('keydown',(e)=>{ if(e.key==='Enter') handleCommand((input.value||'').trim()); });
+/* ---------- Stats toggle ---------- */
+document.getElementById("btnToggleStats")?.addEventListener("click", ()=>{
+  const collapsed = statsEl.classList.toggle("collapsed");
+  toast(collapsed ? "Dashboard collapsed." : "Dashboard expanded.");
+});
 
 /* ---------- Routes + planes ---------- */
 function greatCircle(a,b,n=160){
@@ -201,8 +191,8 @@ function greatCircle(a,b,n=160){
 }
 
 let currentNodes = {...NODES};
-let ROUTES = [];            // features
-let ROUTE_MAP = new Map();  // "A-B" -> coords (directional)
+let ROUTES = [];
+let ROUTE_MAP = new Map();
 let PLANES = [];
 
 let overlay=null, ctx=null, PLANE_IMG=null, PLANE_READY=false;
@@ -240,23 +230,16 @@ function getArcCoords(A,B){
   return coords;
 }
 
-/* Curated route builder:
-   - hub: everyone <-> DXB
-   - plus signature corridors
-*/
 function buildPairsHubPlusSignature(){
   const pairs = [];
   const keys = Object.keys(currentNodes).filter(k=>k!==HUB);
 
-  // hub spokes
   for (const K of keys) pairs.push([K, HUB]);
 
-  // signature corridors (only if both exist)
   for (const [A,B] of SIGNATURE_CORRIDORS){
     if (currentNodes[A] && currentNodes[B]) pairs.push([A,B]);
   }
 
-  // de-dup unordered
   const seen = new Set();
   const out = [];
   for (const [A,B] of pairs){
@@ -290,7 +273,6 @@ function ensureRouteLayers(){
   if(!map.getSource("routes")) map.addSource("routes",{type:"geojson", data: baseFC});
   else map.getSource("routes").setData(baseFC);
 
-  // Premium, minimal layers: one glow + one base
   if(!map.getLayer("routes-glow")){
     map.addLayer({
       id: "routes-glow",
@@ -326,7 +308,6 @@ function ensureRouteLayers(){
     }, "routes-glow");
   }
 
-  // alert (red) and fix (green)
   if(!map.getSource("alert")) map.addSource("alert",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
   if(!map.getLayer("alert-red")){
     map.addLayer({
@@ -360,7 +341,6 @@ function setAlertByPairs(pairs){
 function clearAlert(){ map.getSource("alert")?.setData({type:"FeatureCollection",features:[]}); }
 
 function setFixFromPaths(paths){
-  // paths is list of ["A","X","B"] etc -> build legs
   const feats = [];
   for (const path of paths){
     for (let i=0;i<path.length-1;i++){
@@ -374,7 +354,6 @@ function setFixFromPaths(paths){
 }
 function clearFix(){ map.getSource("fix")?.setData({type:"FeatureCollection",features:[]}); }
 
-/* ---------- Capitals layer (single function, no duplicates) ---------- */
 function upsertCapitals(){
   const features = Object.entries(currentNodes).map(([id, v]) => ({
     type: "Feature",
@@ -432,7 +411,7 @@ function upsertCapitals(){
 }
 
 /* ---------- Planes ---------- */
-const MAX_PLANES = 16; // cap for premium smoothness
+const MAX_PLANES = 16;
 
 function spawnPlane(id, A, B){
   const coords = getArcCoords(A,B);
@@ -445,8 +424,8 @@ function spawnPlane(id, A, B){
     t: Math.random() * 0.6,
     speed: 0.85 + Math.random()*0.25,
     paused: false,
-    affectedKey: null,     // keyPair(A,B) if disrupted
-    reroute: null          // optional reroute polyline (combined)
+    affectedKey: null,
+    reroute: null
   });
 }
 
@@ -454,7 +433,6 @@ function buildPlanesForPairs(pairs){
   PLANES.length = 0;
   let idx = 1;
 
-  // sample pairs if too many
   const sampled = pairs.slice(0, Math.ceil(MAX_PLANES/2));
   for (const [A,B] of sampled){
     spawnPlane(`F${idx++}`, A, B);
@@ -470,7 +448,6 @@ function drawPlaneAt(p, theta){
   const W = baseAtZoom * PLANE_SIZE_MULT;
   const H = W;
 
-  // shadow
   ctx.save();
   ctx.translate(p.x, p.y);
   ctx.rotate(theta);
@@ -554,13 +531,12 @@ function drawPlanes(){
     const y = aP.y + (bP.y-aP.y)*PL.t + bob;
 
     const bearing = turf.bearing([a[0],a[1]], [b[0],b[1]]);
-    let theta = (bearing * Math.PI) / 180;
+    const theta = (bearing * Math.PI) / 180;
 
     drawPlaneAt({x,y}, theta);
   }
 }
 
-/* ---------- Animation loop ---------- */
 let __lastTS = performance.now();
 function tick(){
   if(ctx){
@@ -626,43 +602,34 @@ function renderStats(){
   }
 }
 
-/* ---------- Camera fit ---------- */
+/* ---------- Camera fit (no left panel now) ---------- */
 function fitToNodes(){
   const b = new maplibregl.LngLatBounds();
   Object.values(currentNodes).forEach(c=>b.extend([c.lon,c.lat]));
   map.fitBounds(b, {
-    padding: { top: 90, left: 90, right: 460, bottom: 90 },
+    padding: { top: 90, left: 90, right: 90, bottom: 110 },
     duration: 950,
     maxZoom: 3.8
   });
 }
 
 /* ---------- State + Scenarios ---------- */
-let MODE = "hub"; // "hub" or "normal"
+let MODE = "hub";
 let DISRUPTED = false;
 let scenarioIndex = -1;
-
-function setModeBadge(){
-  modeBadge.textContent = (MODE === "hub") ? "Hub Dubai" : "Normal";
-}
 
 function setScenarioPill(text){
   scenarioPill.textContent = text;
 }
 
 function applyNetwork(){
-  // network depends on mode; we still keep curated look
   let pairs;
   if (MODE === "hub"){
     pairs = buildPairsHubPlusSignature();
   } else {
-    // "Normal" = curated corridors only (still premium), not all-to-all
     pairs = [...SIGNATURE_CORRIDORS].filter(([A,B])=>currentNodes[A] && currentNodes[B]);
-    // ensure at least some spokes to keep density readable
-    if (currentNodes[HUB]) {
-      for (const k of Object.keys(currentNodes)) if (k!==HUB) pairs.push([k,HUB]);
-    }
-    // de-dup
+    if (currentNodes[HUB]) for (const k of Object.keys(currentNodes)) if (k!==HUB) pairs.push([k,HUB]);
+
     const seen = new Set(); const out=[];
     for (const [A,B] of pairs){ const k=keyPair(A,B); if(seen.has(k)) continue; seen.add(k); out.push([A,B]); }
     pairs = out;
@@ -673,7 +640,6 @@ function applyNetwork(){
   buildPlanesForPairs(pairs);
   upsertCapitals();
   fitToNodes();
-  setModeBadge();
   renderStats();
 }
 
@@ -686,7 +652,7 @@ function clearDisruptionState(){
 
 function startDisrupt(){
   if (DISRUPTED){
-    pushMsg("A disruption is already active. Apply Correct, or switch mode.");
+    toast("Disruption already active. Press Correct.");
     return;
   }
   scenarioIndex = (scenarioIndex + 1) % SCENARIOS.length;
@@ -695,7 +661,6 @@ function startDisrupt(){
   DISRUPTED = true;
   setScenarioPill(sc.name);
 
-  // highlight disrupted corridors
   setAlertByPairs(sc.disruptPairs);
   clearFix();
 
@@ -708,24 +673,21 @@ function startDisrupt(){
     }
   }
 
-  pushMsg(`🟥 Disruption: ${sc.name}. Impacted corridors paused.`);
+  toast(`🟥 Disruption: ${sc.name}`);
   speak(sc.disruptNarration);
   renderStats();
 }
 
 function applyCorrect(){
   if (!DISRUPTED){
-    pushMsg("No active disruption. Click Disrupt first.");
+    toast("No active disruption. Press Disrupt first.");
     return;
   }
   const sc = SCENARIOS[scenarioIndex];
 
-  // show fix paths in green
   setFixFromPaths(sc.correctionPaths);
   clearAlert();
 
-  // Build combined polylines for each correction path (A->...->B)
-  // Then reassign affected flights whose endpoints match the start/end of a correction path.
   const combined = [];
   for (const path of sc.correctionPaths){
     const forward = [];
@@ -743,7 +705,6 @@ function applyCorrect(){
   for (const PL of PLANES){
     if (!PL.affectedKey) continue;
 
-    // match based on endpoints first (best UX)
     const match = combined.find(c => (c.from===PL.A && c.to===PL.B) || (c.from===PL.B && c.to===PL.A));
     if (match){
       PL.reroute = (match.from===PL.A && match.to===PL.B) ? match.coords : match.back;
@@ -755,7 +716,7 @@ function applyCorrect(){
   }
 
   DISRUPTED = false;
-  pushMsg(`🟩 Correction applied: ${sc.name}. Green reroutes active.`);
+  toast(`🟩 Correction applied: ${sc.name}`);
   speak(sc.correctNarration);
   renderStats();
 }
@@ -766,7 +727,7 @@ function setHubDubai(){
   MODE = "hub";
   setScenarioPill("Normal operations");
   applyNetwork();
-  pushMsg("🟨 Hub Dubai enabled. Network is now intentionally hub-and-spoke with signature corridors.");
+  toast("🟨 Hub Dubai enabled.");
   speak("Hub Dubai enabled. Network operating in hub and spoke mode.");
 }
 
@@ -776,43 +737,31 @@ function setNormal(){
   MODE = "normal";
   setScenarioPill("Normal operations");
   applyNetwork();
-  pushMsg("🟦 Normal operations. Curated global corridors active (premium view).");
+  toast("🟦 Normal operations enabled.");
   speak("Normal operations. Curated global corridors active.");
 }
 
 function addCity(code){
   const C = (code||"").toUpperCase();
   const node = NEW_CITIES[C];
-  if (!node){ pushMsg(`Unknown city: ${code}`); return; }
-  if (currentNodes[C]){ pushMsg(`${node.name} is already added.`); return; }
+  if (!node){ toast(`Unknown city: ${code}`); return; }
+  if (currentNodes[C]){ toast(`${node.name} already added.`); return; }
 
   currentNodes = { ...currentNodes, [C]: node };
   clearDisruptionState();
   applyNetwork();
 
-  pushMsg(`➕ Added ${node.name}. Network recomputed and camera refit.`);
+  toast(`➕ Added ${node.name}.`);
   speak(`${node.name} added. Network recomputed.`);
 }
 
-/* ---------- Command handler ---------- */
-function handleCommand(raw){
-  const cmd = (raw||'').trim();
-  if(!cmd) return;
-
-  unlockNarrationOnce();
-  pushMsg(cmd,'user');
-  if (input) input.value = "";
-
-  const k = cmd.toLowerCase();
-
-  if (k === "normal") setNormal();
-  else if (k === "hub dubai" || k === "hub" || k === "dubai hub") setHubDubai();
-  else if (k === "disrupt") startDisrupt();
-  else if (k === "correct") applyCorrect();
-  else if (k === "add paris" || k === "paris") addCity("PAR");
-  else if (k === "add vienna" || k === "vienna") addCity("VIE");
-  else pushMsg("Valid commands: Normal, Hub Dubai, Disrupt, Correct, Add Paris, Add Vienna.");
-}
+/* ---------- Button wiring ---------- */
+document.getElementById('btnNormal')?.addEventListener('click', ()=>setNormal());
+document.getElementById('btnHub')?.addEventListener('click', ()=>setHubDubai());
+document.getElementById('btnDisrupt')?.addEventListener('click', ()=>startDisrupt());
+document.getElementById('btnCorrect')?.addEventListener('click', ()=>applyCorrect());
+document.getElementById('btnAddParis')?.addEventListener('click', ()=>addCity("PAR"));
+document.getElementById('btnAddVienna')?.addEventListener('click', ()=>addCity("VIE"));
 
 /* ---------- Boot ---------- */
 map.on("load", async ()=>{
@@ -825,16 +774,13 @@ map.on("load", async ()=>{
   PLANE_IMG.onerror = ()=>{ PLANE_READY = false; };
   PLANE_IMG.src = PLANE_IMG_SRC + "?v=" + Date.now();
 
-  // Default: premium hub mode
+  // default: hub mode
   MODE = "hub";
   applyNetwork();
 
-  pushMsg("Ready. Try: Hub Dubai, Disrupt, Correct, Normal, Add Paris, Add Vienna.");
-  // speech will begin only after first click/enter due to autoplay rules
+  toast("Ready. Press Narration to enable voice, then try Disrupt → Correct.");
+  // stats refresh
+  setInterval(renderStats, 1200);
 
   requestAnimationFrame(tick);
-
-  // keep stats fresh (optional, lightweight)
-  setInterval(renderStats, 1200);
 });
-
