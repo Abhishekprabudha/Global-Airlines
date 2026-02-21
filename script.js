@@ -1,3 +1,14 @@
+/* =========================
+REPLACE ENTIRE script.js WITH THIS
+Clean baseline + optional cities + Hub Dubai toggle
+- Baseline cities include Moscow, Kabul, New Delhi (always present)
+- Default load = Normal baseline (Dubai is NOT hub)
+- Hub Dubai button enables hub-and-spoke centered on DXB
+- Paris/Vienna only appear after Add buttons
+- Press Normal ALWAYS resets to baseline (removes Paris/Vienna, removes hub)
+- Dashboard toggle + reliable narration
+========================= */
+
 const STYLE_URL = "style.json";
 
 /* ---------- Map init (global view) ---------- */
@@ -12,33 +23,56 @@ const AIRCRAFT_CAPACITY_TONS = 18;
 const AIRSPEED_KMPH = 870;
 const FUEL_BURN_KG_PER_KM = 3.1;
 
-/* ---------- Cities ---------- */
-const NODES = {
-  DXB: { name:"Dubai",      lon:55.2708,  lat:25.2048 },
-  FRA: { name:"Frankfurt",  lon:8.6821,   lat:50.1109 },
-  LON: { name:"London",     lon:-0.1276,  lat:51.5072 },
-  ROM: { name:"Rome",       lon:12.4964,  lat:41.9028 },
-  NYC: { name:"New York",   lon:-74.0060, lat:40.7128 },
-  CHI: { name:"Chicago",    lon:-87.6298, lat:41.8781 },
-  HKG: { name:"Hong Kong",  lon:114.1694, lat:22.3193 },
-  TYO: { name:"Tokyo",      lon:139.6917, lat:35.6895 }
+/* ---------- Base Cities (always present) ---------- */
+const BASE_NODES = {
+  DXB: { name:"Dubai",       lon:55.2708,  lat:25.2048 },
+  FRA: { name:"Frankfurt",   lon:8.6821,   lat:50.1109 },
+  LON: { name:"London",      lon:-0.1276,  lat:51.5072 },
+  ROM: { name:"Rome",        lon:12.4964,  lat:41.9028 },
+  NYC: { name:"New York",    lon:-74.0060, lat:40.7128 },
+  CHI: { name:"Chicago",     lon:-87.6298, lat:41.8781 },
+  HKG: { name:"Hong Kong",   lon:114.1694, lat:22.3193 },
+  TYO: { name:"Tokyo",       lon:139.6917, lat:35.6895 },
+
+  // Added baseline cities
+  MOW: { name:"Moscow",      lon:37.6173,  lat:55.7558 },
+  KBL: { name:"Kabul",       lon:69.2075,  lat:34.5553 },
+  DEL: { name:"New Delhi",   lon:77.2090,  lat:28.6139 }
 };
 
-const NEW_CITIES = {
+/* ---------- Optional Cities (only via buttons) ---------- */
+const OPTIONAL_CITIES = {
   PAR: { name:"Paris",  lon:2.3522,  lat:48.8566 },
   VIE: { name:"Vienna", lon:16.3738, lat:48.2082 }
 };
 
 const HUB = "DXB";
-const SIGNATURE_CORRIDORS = [
+
+/* Normal mode: curated corridors WITHOUT hub-and-spoke */
+const SIGNATURE_CORRIDORS_NORMAL = [
   ["LON","NYC"],
   ["FRA","ROM"],
   ["HKG","TYO"],
-  ["DXB","HKG"],
-  ["DXB","LON"],
+  ["NYC","CHI"],
+
+  // regional richness
+  ["FRA","MOW"],
+  ["DEL","KBL"],
+  ["DEL","DXB"],   // Dubai is just another airport here
+  ["ROM","DXB"]
+];
+
+/* Hub mode: hub-and-spoke + a few signature showpiece links */
+const SIGNATURE_CORRIDORS_HUB = [
+  ["LON","NYC"],
+  ["FRA","ROM"],
+  ["HKG","TYO"],
   ["NYC","CHI"]
 ];
 
+/* ---------- Scenarios (cycle) ----------
+NOTE: scenarios reference DXB; works in both modes (if a pair doesn't exist, it will just highlight what's present)
+*/
 const SCENARIOS = [
   {
     name: "North Atlantic jetstream turbulence",
@@ -76,7 +110,9 @@ const SCENARIOS = [
 ];
 
 /* ---------- Utilities ---------- */
-function escapeHTML(s){ return String(s).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+function escapeHTML(s){
+  return String(s).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
 function keyPair(A,B){ return [A,B].sort().join("-"); }
 
 /* ---------- Map ---------- */
@@ -96,22 +132,21 @@ const scenarioPill = document.getElementById('scenarioPill');
 const statsEl = document.getElementById('stats');
 const toastEl = document.getElementById('toast');
 
-/* ---------- Toast (replaces left panel chatter) ---------- */
+/* ---------- Toast ---------- */
 let toastTimer = null;
+const BASE_TOAST_HTML = `Use the top buttons to drive the simulation: <b>Hub Dubai</b>, <b>Disrupt</b>, <b>Correct</b>, <b>Normal</b>.
+  <small>Tip: click anywhere once to enable narration (browser policy). Then press “Narration”.</small>`;
+
 function toast(msg, holdMs = 2600){
   if (!toastEl) return;
   toastEl.innerHTML = `${escapeHTML(msg)}<small>Use buttons: Hub Dubai → Disrupt → Correct → Normal</small>`;
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=> {
-    // restore baseline hint
-    toastEl.innerHTML = `Use the top buttons to drive the simulation: <b>Hub Dubai</b>, <b>Disrupt</b>, <b>Correct</b>, <b>Normal</b>.
-      <small>Tip: click anywhere once to enable narration (browser policy). Then press “Narration”.</small>`;
-  }, holdMs);
+  toastTimer = setTimeout(()=> { toastEl.innerHTML = BASE_TOAST_HTML; }, holdMs);
 }
 
-/* ---------- Speech (more reliable) ---------- */
+/* ---------- Speech (reliable) ---------- */
 const synth = window.speechSynthesis;
-let MUTED = true;                  // start muted to avoid “it didn’t speak” confusion
+let MUTED = true;                 // start muted
 let VOICE = null;
 let NARRATION_UNLOCKED = false;
 let PENDING_SPEAK = null;
@@ -119,8 +154,6 @@ let PENDING_SPEAK = null;
 function unlockNarrationOnce(){
   if (NARRATION_UNLOCKED) return;
   NARRATION_UNLOCKED = true;
-
-  // Prime voices on some browsers (no volume “dummy” is often blocked; so just fetch voices)
   try { synth.getVoices(); } catch(_) {}
 }
 
@@ -130,7 +163,6 @@ function chooseVoice(){
   return voices.find(v => /en-|English/i.test(v.lang)) || voices[0];
 }
 
-// When voices load async, retry the last line
 if (synth) {
   synth.onvoiceschanged = () => {
     if (!VOICE) VOICE = chooseVoice();
@@ -144,13 +176,12 @@ if (synth) {
 
 function speak(line){
   if (!synth) return;
-  if (!NARRATION_UNLOCKED) { PENDING_SPEAK = line; return; } // wait for first gesture
+  if (!NARRATION_UNLOCKED) { PENDING_SPEAK = line; return; }
   if (MUTED) return;
 
   try { synth.cancel(); } catch(_) {}
-
   if (!VOICE) VOICE = chooseVoice();
-  if (!VOICE) { PENDING_SPEAK = line; return; } // voices not ready yet
+  if (!VOICE) { PENDING_SPEAK = line; return; }
 
   const u = new SpeechSynthesisUtterance(String(line));
   u.voice = VOICE;
@@ -160,10 +191,10 @@ function speak(line){
   try { synth.speak(u); } catch(_) {}
 }
 
-// Unlock narration on ANY first click/tap (not only on buttons)
+// Unlock narration on first click/tap anywhere
 document.addEventListener("pointerdown", unlockNarrationOnce, { once:true });
 
-/* Narration toggle button */
+/* Narration toggle */
 const btnMute = document.getElementById("btnMute");
 function renderNarrationBtn(){
   if (!btnMute) return;
@@ -184,19 +215,30 @@ document.getElementById("btnToggleStats")?.addEventListener("click", ()=>{
   toast(collapsed ? "Dashboard collapsed." : "Dashboard expanded.");
 });
 
-/* ---------- Routes + planes ---------- */
+/* ---------- Great-circle routes ---------- */
 function greatCircle(a,b,n=160){
   const line = turf.greatCircle([a.lon,a.lat],[b.lon,b.lat],{npoints:n});
   return line.geometry.coordinates;
 }
 
-let currentNodes = {...NODES};
+/* ---------- State ---------- */
+let currentNodes = { ...BASE_NODES };
 let ROUTES = [];
 let ROUTE_MAP = new Map();
 let PLANES = [];
 
 let overlay=null, ctx=null, PLANE_IMG=null, PLANE_READY=false;
 
+/* Modes */
+let MODE = "normal";   // "normal" | "hub"
+let DISRUPTED = false;
+let scenarioIndex = -1;
+
+function setScenarioPill(text){
+  if (scenarioPill) scenarioPill.textContent = text;
+}
+
+/* ---------- Canvas overlay ---------- */
 function ensureCanvas(){
   overlay = document.getElementById("planesCanvas");
   if(!overlay){
@@ -219,24 +261,30 @@ function resizeCanvas(){
 }
 window.addEventListener("resize", resizeCanvas);
 
+/* ---------- Route cache ---------- */
 function getArcCoords(A,B){
-  const c = ROUTE_MAP.get(`${A}-${B}`);
-  if (c) return c;
+  const cached = ROUTE_MAP.get(`${A}-${B}`);
+  if (cached) return cached;
+
   const a = currentNodes[A], b = currentNodes[B];
   if (!a || !b) return [];
+
   const coords = greatCircle(a,b,160);
   ROUTE_MAP.set(`${A}-${B}`, coords);
   ROUTE_MAP.set(`${B}-${A}`, [...coords].reverse());
   return coords;
 }
 
+/* ---------- Pair builders ---------- */
 function buildPairsHubPlusSignature(){
   const pairs = [];
   const keys = Object.keys(currentNodes).filter(k=>k!==HUB);
 
+  // hub spokes
   for (const K of keys) pairs.push([K, HUB]);
 
-  for (const [A,B] of SIGNATURE_CORRIDORS){
+  // showpiece corridors
+  for (const [A,B] of SIGNATURE_CORRIDORS_HUB){
     if (currentNodes[A] && currentNodes[B]) pairs.push([A,B]);
   }
 
@@ -251,6 +299,7 @@ function buildPairsHubPlusSignature(){
   return out;
 }
 
+/* ---------- Build GeoJSON routes ---------- */
 function rebuildRoutesFromPairs(pairs){
   ROUTES = [];
   ROUTE_MAP.clear();
@@ -267,6 +316,7 @@ function rebuildRoutesFromPairs(pairs){
   }
 }
 
+/* ---------- Map layers ---------- */
 function ensureRouteLayers(){
   const baseFC = { type:"FeatureCollection", features: ROUTES };
 
@@ -334,7 +384,8 @@ function setAlertByPairs(pairs){
   for (const [A,B] of pairs){
     const id = `${A}-${B}`;
     const coords = ROUTE_MAP.get(`${A}-${B}`) || ROUTE_MAP.get(`${B}-${A}`);
-    feats.push({ type:"Feature", properties:{ id }, geometry:{ type:"LineString", coordinates: coords||[] } });
+    if (!coords || coords.length < 2) continue;
+    feats.push({ type:"Feature", properties:{ id }, geometry:{ type:"LineString", coordinates: coords } });
   }
   map.getSource("alert")?.setData({type:"FeatureCollection", features: feats});
 }
@@ -345,15 +396,16 @@ function setFixFromPaths(paths){
   for (const path of paths){
     for (let i=0;i<path.length-1;i++){
       const from = path[i], to = path[i+1];
-      const id = `${from}-${to}`;
       const coords = getArcCoords(from,to);
-      feats.push({ type:"Feature", properties:{ id }, geometry:{ type:"LineString", coordinates: coords||[] } });
+      if (!coords || coords.length < 2) continue;
+      feats.push({ type:"Feature", properties:{ id:`${from}-${to}` }, geometry:{ type:"LineString", coordinates: coords } });
     }
   }
   map.getSource("fix")?.setData({type:"FeatureCollection", features: feats});
 }
 function clearFix(){ map.getSource("fix")?.setData({type:"FeatureCollection",features:[]}); }
 
+/* ---------- Capitals layer ---------- */
 function upsertCapitals(){
   const features = Object.entries(currentNodes).map(([id, v]) => ({
     type: "Feature",
@@ -432,7 +484,6 @@ function spawnPlane(id, A, B){
 function buildPlanesForPairs(pairs){
   PLANES.length = 0;
   let idx = 1;
-
   const sampled = pairs.slice(0, Math.ceil(MAX_PLANES/2));
   for (const [A,B] of sampled){
     spawnPlane(`F${idx++}`, A, B);
@@ -448,6 +499,7 @@ function drawPlaneAt(p, theta){
   const W = baseAtZoom * PLANE_SIZE_MULT;
   const H = W;
 
+  // shadow
   ctx.save();
   ctx.translate(p.x, p.y);
   ctx.rotate(theta);
@@ -602,7 +654,7 @@ function renderStats(){
   }
 }
 
-/* ---------- Camera fit (no left panel now) ---------- */
+/* ---------- Camera fit ---------- */
 function fitToNodes(){
   const b = new maplibregl.LngLatBounds();
   Object.values(currentNodes).forEach(c=>b.extend([c.lon,c.lat]));
@@ -613,25 +665,25 @@ function fitToNodes(){
   });
 }
 
-/* ---------- State + Scenarios ---------- */
-let MODE = "hub";
-let DISRUPTED = false;
-let scenarioIndex = -1;
-
-function setScenarioPill(text){
-  scenarioPill.textContent = text;
-}
-
+/* ---------- Network application ---------- */
 function applyNetwork(){
   let pairs;
+
   if (MODE === "hub"){
     pairs = buildPairsHubPlusSignature();
   } else {
-    pairs = [...SIGNATURE_CORRIDORS].filter(([A,B])=>currentNodes[A] && currentNodes[B]);
-    if (currentNodes[HUB]) for (const k of Object.keys(currentNodes)) if (k!==HUB) pairs.push([k,HUB]);
+    // Normal: curated corridors only (no spokes)
+    pairs = SIGNATURE_CORRIDORS_NORMAL
+      .filter(([A,B]) => currentNodes[A] && currentNodes[B]);
 
-    const seen = new Set(); const out=[];
-    for (const [A,B] of pairs){ const k=keyPair(A,B); if(seen.has(k)) continue; seen.add(k); out.push([A,B]); }
+    const seen = new Set();
+    const out = [];
+    for (const [A,B] of pairs){
+      const k = keyPair(A,B);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push([A,B]);
+    }
     pairs = out;
   }
 
@@ -643,13 +695,18 @@ function applyNetwork(){
   renderStats();
 }
 
+/* ---------- Disruption state ---------- */
 function clearDisruptionState(){
   DISRUPTED = false;
-  for (const p of PLANES){ p.paused=false; p.affectedKey=null; p.reroute=null; p.seg=0; p.t=Math.random()*0.2; }
+  for (const p of PLANES){
+    p.paused=false; p.affectedKey=null; p.reroute=null;
+    p.seg=0; p.t=Math.random()*0.2;
+  }
   clearAlert();
   clearFix();
 }
 
+/* ---------- Scenarios ---------- */
 function startDisrupt(){
   if (DISRUPTED){
     toast("Disruption already active. Press Correct.");
@@ -721,29 +778,38 @@ function applyCorrect(){
   renderStats();
 }
 
+/* ---------- Mode handlers ---------- */
 function setHubDubai(){
   unlockNarrationOnce();
   clearDisruptionState();
+
   MODE = "hub";
   setScenarioPill("Normal operations");
   applyNetwork();
-  toast("🟨 Hub Dubai enabled.");
+
+  toast("🟨 Hub Dubai enabled (hub-and-spoke).");
   speak("Hub Dubai enabled. Network operating in hub and spoke mode.");
 }
 
 function setNormal(){
   unlockNarrationOnce();
   clearDisruptionState();
+
+  // RESET baseline: remove optional cities + remove hub mode
+  currentNodes = { ...BASE_NODES };
   MODE = "normal";
+
   setScenarioPill("Normal operations");
   applyNetwork();
-  toast("🟦 Normal operations enabled.");
-  speak("Normal operations. Curated global corridors active.");
+
+  toast("🟦 Normal baseline restored. Paris/Vienna removed. Dubai is not hub.");
+  speak("Normal operations restored. Dubai is not operating as a hub.");
 }
 
+/* ---------- Optional city add ---------- */
 function addCity(code){
   const C = (code||"").toUpperCase();
-  const node = NEW_CITIES[C];
+  const node = OPTIONAL_CITIES[C];
   if (!node){ toast(`Unknown city: ${code}`); return; }
   if (currentNodes[C]){ toast(`${node.name} already added.`); return; }
 
@@ -752,7 +818,7 @@ function addCity(code){
   applyNetwork();
 
   toast(`➕ Added ${node.name}.`);
-  speak(`${node.name} added. Network recomputed.`);
+  speak(`${node.name} added.`);
 }
 
 /* ---------- Button wiring ---------- */
@@ -774,13 +840,12 @@ map.on("load", async ()=>{
   PLANE_IMG.onerror = ()=>{ PLANE_READY = false; };
   PLANE_IMG.src = PLANE_IMG_SRC + "?v=" + Date.now();
 
-  // default: hub mode
-  MODE = "hub";
+  // Default: NORMAL baseline (Dubai not hub; no Paris/Vienna)
+  MODE = "normal";
+  currentNodes = { ...BASE_NODES };
   applyNetwork();
 
-  toast("Ready. Press Narration to enable voice, then try Disrupt → Correct.");
-  // stats refresh
+  toast("Ready. Press Narration to enable voice, then try Disrupt → Correct. Use Hub Dubai to switch to hub mode.");
   setInterval(renderStats, 1200);
-
   requestAnimationFrame(tick);
 });
