@@ -1,9 +1,16 @@
 /* =========================
 REPLACE ENTIRE script.js WITH THIS
-Fixes:
-1) Disrupt Countries now shows ONLY red + narration. Green only on Correct.
-2) Green corridors do NOT auto-disappear; they persist until another action clears them.
-3) Guaranteed flights on CCS<->NYC, CCS<->ROM, MOW<->THR, DEL<->HKG, FRA<->LON.
+
+Fixes + Guarantees:
+1) Disrupt Countries shows ONLY red + disruption narration. Green shows ONLY on Correct + correction narration.
+2) Green corridors NEVER auto-disappear. They persist until user clicks another major action (Normal/Hub/Add/Disrupt).
+3) Guaranteed planes on:
+   - All corridors touching CHI, DXB, KBL, THR (requested)
+   - Plus must-have corridors: CCS<->NYC, CCS<->ROM, MOW<->THR, DEL<->HKG, FRA<->LON
+4) More visible traffic: MAX_PLANES increased (safe default 48).
+
+No style.json changes required.
+
 ========================= */
 
 const STYLE_URL = "style.json";
@@ -22,21 +29,21 @@ const FUEL_BURN_KG_PER_KM = 3.1;
 
 /* ---------- Master Nodes ---------- */
 const NODES_MASTER = {
-  DXB: { name:"Dubai",       lon:55.2708,  lat:25.2048 },
-  FRA: { name:"Frankfurt",   lon:8.6821,   lat:50.1109 },
-  LON: { name:"London",      lon:-0.1276,  lat:51.5072 },
-  ROM: { name:"Rome",        lon:12.4964,  lat:41.9028 },
-  NYC: { name:"New York",    lon:-74.0060, lat:40.7128 },
-  CHI: { name:"Chicago",     lon:-87.6298, lat:41.8781 },
-  HKG: { name:"Hong Kong",   lon:114.1694, lat:22.3193 },
-  TYO: { name:"Tokyo",       lon:139.6917, lat:35.6895 },
+  DXB: { name:"Dubai",        lon:55.2708,  lat:25.2048 },
+  FRA: { name:"Frankfurt",    lon:8.6821,   lat:50.1109 },
+  LON: { name:"London",       lon:-0.1276,  lat:51.5072 },
+  ROM: { name:"Rome",         lon:12.4964,  lat:41.9028 },
+  NYC: { name:"New York",     lon:-74.0060, lat:40.7128 },
+  CHI: { name:"Chicago",      lon:-87.6298, lat:41.8781 },
+  HKG: { name:"Hong Kong",    lon:114.1694, lat:22.3193 },
+  TYO: { name:"Tokyo",        lon:139.6917, lat:35.6895 },
 
-  MOW: { name:"Moscow",      lon:37.6173,  lat:55.7558 },
-  KBL: { name:"Kabul",       lon:69.2075,  lat:34.5553 },
-  DEL: { name:"New Delhi",   lon:77.2090,  lat:28.6139 },
+  MOW: { name:"Moscow",       lon:37.6173,  lat:55.7558 },
+  KBL: { name:"Kabul",        lon:69.2075,  lat:34.5553 },
+  DEL: { name:"New Delhi",    lon:77.2090,  lat:28.6139 },
 
-  THR: { name:"Tehran",      lon:51.3890,  lat:35.6892 },
-  CCS: { name:"Caracas",     lon:-66.9036, lat:10.4806 }
+  THR: { name:"Tehran",       lon:51.3890,  lat:35.6892 },
+  CCS: { name:"Caracas",      lon:-66.9036, lat:10.4806 }
 };
 
 /* ---------- Base Nodes ---------- */
@@ -123,9 +130,9 @@ map.addControl(new maplibregl.NavigationControl({visualizePitch:false}),"top-lef
 /* ---------- UI refs ---------- */
 const scenarioPill = document.getElementById('scenarioPill');
 const statsEl = document.getElementById('stats');
-const toastEl = document.getElementById('toast'); // may be removed in HTML; safe if null
+const toastEl = document.getElementById('toast'); // toast may not exist; safe
 
-/* ---------- Toast ---------- */
+/* ---------- Toast (optional) ---------- */
 let toastTimer = null;
 const BASE_TOAST_HTML = `Ready. Use buttons: Hub Dubai → Disrupt → Correct → Normal.`;
 
@@ -229,9 +236,9 @@ let routeScenarioIndex = -1;
 let COUNTRY_DISRUPTED = false;
 let countryScenarioIndex = -1;
 let ACTIVE_COUNTRY_BLOCK = null;
-let COUNTRY_PENDING_BYPASS = null; // bypassPairs to show ONLY on Correct
+let COUNTRY_PENDING_BYPASS = null;
 
-/* Persisted overlays until user action */
+/* Persist green overlays until user clears via another action */
 let FIX_PERSIST = false;
 
 function setScenarioPill(text){
@@ -280,8 +287,10 @@ function buildPairsHubPlusSignature(){
   const pairs = [];
   const keys = Object.keys(currentNodes).filter(k=>k!==HUB);
 
+  // hub spokes
   for (const K of keys) pairs.push([K, HUB]);
 
+  // showpiece corridors
   for (const [A,B] of SIGNATURE_CORRIDORS_HUB){
     if (getNode(A) && getNode(B)) pairs.push([A,B]);
   }
@@ -457,9 +466,9 @@ function upsertCapitals(){
 }
 
 /* ---------- Planes ---------- */
-const MAX_PLANES = 16;
+const MAX_PLANES = 48;
 
-/* Guaranteed flight corridors (always spawn planes on these first) */
+/* Always show flights on these corridors first (if present) */
 const MUST_HAVE_FLIGHTS = [
   ["CCS","NYC"],
   ["CCS","ROM"],
@@ -467,6 +476,9 @@ const MUST_HAVE_FLIGHTS = [
   ["DEL","HKG"],
   ["FRA","LON"]
 ];
+
+/* Requested: run flights on ALL corridors touching these cities */
+const GUARANTEE_HUBS = new Set(["CHI","DXB","KBL","THR"]);
 
 function spawnPlane(id, A, B){
   const coords = getArcCoords(A,B);
@@ -486,33 +498,46 @@ function spawnPlane(id, A, B){
 
 function buildPlanesForPairs(pairs){
   PLANES.length = 0;
+  let idx = 1;
 
   const pairSet = new Set(pairs.map(([A,B])=>keyPair(A,B)));
+  const used = new Set();
 
-  // 1) Spawn guaranteed planes on must-have corridors (if those corridors exist in current pairs)
-  let idx = 1;
-  for (const [A,B] of MUST_HAVE_FLIGHTS){
-    const k = keyPair(A,B);
-    if (!pairSet.has(k)) continue;
+  function spawnBoth(A,B){
+    if (PLANES.length + 2 > MAX_PLANES) return false;
     spawnPlane(`F${idx++}`, A, B);
     spawnPlane(`F${idx++}`, B, A);
+    used.add(keyPair(A,B));
+    return true;
   }
 
-  // 2) Fill remaining plane slots with other corridors
-  const remainingSlots = Math.max(0, MAX_PLANES - PLANES.length);
-  if (remainingSlots === 0) return;
+  // 1) Must-have corridors
+  for (const [A,B] of MUST_HAVE_FLIGHTS){
+    if (!pairSet.has(keyPair(A,B))) continue;
+    if (used.has(keyPair(A,B))) continue;
+    spawnBoth(A,B);
+    if (PLANES.length >= MAX_PLANES) return;
+  }
 
-  const alreadyUsed = new Set(PLANES.map(p => keyPair(p.A,p.B)));
-  const pool = pairs.filter(([A,B]) => !alreadyUsed.has(keyPair(A,B)));
+  // 2) ALL corridors touching CHI/DXB/KBL/THR
+  for (const [A,B] of pairs){
+    if (PLANES.length >= MAX_PLANES) return;
+    if (!(GUARANTEE_HUBS.has(A) || GUARANTEE_HUBS.has(B))) continue;
 
-  const needPairs = Math.ceil(remainingSlots/2);
-  const sampled = pool.slice(0, needPairs);
+    const k = keyPair(A,B);
+    if (used.has(k)) continue;
 
-  for (const [A,B] of sampled){
+    spawnBoth(A,B);
+  }
+
+  if (PLANES.length >= MAX_PLANES) return;
+
+  // 3) Fill remaining slots with remaining corridors
+  for (const [A,B] of pairs){
     if (PLANES.length >= MAX_PLANES) break;
-    spawnPlane(`F${idx++}`, A, B);
-    if (PLANES.length >= MAX_PLANES) break;
-    spawnPlane(`F${idx++}`, B, A);
+    const k = keyPair(A,B);
+    if (used.has(k)) continue;
+    spawnBoth(A,B);
   }
 }
 
@@ -791,10 +816,11 @@ function applyNetwork(){
   renderStats();
 }
 
-/* ---------- Overlay clearing rules ---------- */
-function clearOverlays(){
+/* ---------- Overlay clearing ---------- */
+function clearOverlaysHard(){
   clearAlert();
-  if (!FIX_PERSIST) clearFix();
+  clearFix();
+  FIX_PERSIST = false;
 }
 
 function clearAllState(){
@@ -810,9 +836,7 @@ function clearAllState(){
     p.seg=0; p.t=Math.random()*0.2;
   }
 
-  FIX_PERSIST = false;
-  clearAlert();
-  clearFix();
+  clearOverlaysHard();
 }
 
 /* ---------- Actions ---------- */
@@ -866,14 +890,14 @@ function startDisruptRoutes(){
     return;
   }
 
-  clearOverlays();
+  // New disrupt clears previous green overlays
+  clearOverlaysHard();
 
   DISRUPT_MODE = "routes";
   routeScenarioIndex = (routeScenarioIndex + 1) % ROUTE_SCENARIOS.length;
   const sc = ROUTE_SCENARIOS[routeScenarioIndex];
 
   ROUTE_DISRUPTED = true;
-  FIX_PERSIST = false;
   setScenarioPill(sc.name);
 
   // ONLY RED on disruption
@@ -905,14 +929,14 @@ function startDisruptCountries(){
     return;
   }
 
-  clearOverlays();
+  // New disrupt clears previous green overlays
+  clearOverlaysHard();
 
   DISRUPT_MODE = "countries";
   countryScenarioIndex = (countryScenarioIndex + 1) % COUNTRY_SCENARIOS.length;
   const sc = COUNTRY_SCENARIOS[countryScenarioIndex];
 
   COUNTRY_DISRUPTED = true;
-  FIX_PERSIST = false;
   ACTIVE_COUNTRY_BLOCK = sc.block;
   COUNTRY_PENDING_BYPASS = sc.bypassPairs;
 
@@ -921,7 +945,7 @@ function startDisruptCountries(){
   // ONLY RED on disruption
   setAlertByPairs(sc.affectedPairs);
 
-  // Pause planes that touch the blocked airport (visual effect)
+  // Pause planes touching blocked airport (demo effect)
   for (const PL of PLANES){
     if (PL.A === sc.block || PL.B === sc.block){
       PL.paused = true;
@@ -941,13 +965,13 @@ function applyCorrect(){
     return;
   }
 
-  // Clear RED always on correct
+  // remove RED always
   clearAlert();
 
   if (DISRUPT_MODE === "routes"){
     const sc = ROUTE_SCENARIOS[routeScenarioIndex];
 
-    // show GREEN correction and KEEP it
+    // GREEN correction persists
     setFixByPairs(sc.correctionPairs);
     FIX_PERSIST = true;
 
@@ -969,19 +993,18 @@ function applyCorrect(){
   if (DISRUPT_MODE === "countries"){
     const sc = COUNTRY_SCENARIOS[countryScenarioIndex];
 
-    // show GREEN bypass and KEEP it
+    // GREEN bypass persists
     const bypass = COUNTRY_PENDING_BYPASS || [];
     setFixByPairs(bypass);
     FIX_PERSIST = true;
 
-    // unpause all (we're demonstrating correction)
+    // unpause all
     for (const PL of PLANES){
       PL.paused = false;
       PL.affectedKey = null;
       PL.reroute = null;
     }
 
-    // keep scenario pill as scenario name (looks good)
     COUNTRY_DISRUPTED = false;
     ACTIVE_COUNTRY_BLOCK = null;
     COUNTRY_PENDING_BYPASS = null;
@@ -1017,7 +1040,6 @@ map.on("load", async ()=>{
   currentNodes = { ...BASE_NODES };
   applyNetwork();
 
-  // (no auto-clear of fix)
   if (toastEl) toast("Ready.");
   setInterval(renderStats, 1200);
   requestAnimationFrame(tick);
