@@ -408,6 +408,59 @@ function setFixByPairs(pairs){
 }
 function clearFix(){ map.getSource("fix")?.setData({type:"FeatureCollection",features:[]}); }
 
+function findHopPath(start, end, pairs, blockedNode = null){
+  if (!start || !end) return null;
+  if (start === end) return [start];
+  if (blockedNode && (start === blockedNode || end === blockedNode)) return null;
+
+  const graph = new Map();
+  function addEdge(a,b){
+    if (blockedNode && (a === blockedNode || b === blockedNode)) return;
+    if (!graph.has(a)) graph.set(a, []);
+    graph.get(a).push(b);
+  }
+
+  for (const [A,B] of pairs || []){
+    addEdge(A,B);
+    addEdge(B,A);
+  }
+
+  if (!graph.has(start) || !graph.has(end)) return null;
+
+  const q = [start];
+  const prev = new Map([[start, null]]);
+  while (q.length){
+    const node = q.shift();
+    if (node === end) break;
+    for (const next of graph.get(node) || []){
+      if (prev.has(next)) continue;
+      prev.set(next, node);
+      q.push(next);
+    }
+  }
+
+  if (!prev.has(end)) return null;
+  const path = [];
+  let cur = end;
+  while (cur){
+    path.push(cur);
+    cur = prev.get(cur);
+  }
+  return path.reverse();
+}
+
+function buildCompositeRoute(hops){
+  if (!hops || hops.length < 2) return null;
+  const out = [];
+  for (let i=0; i<hops.length-1; i++){
+    const seg = getArcCoords(hops[i], hops[i+1]);
+    if (!seg || seg.length < 2) return null;
+    if (i === 0) out.push(...seg);
+    else out.push(...seg.slice(1));
+  }
+  return out.length >= 2 ? out : null;
+}
+
 /* ---------- Capitals layer ---------- */
 function upsertCapitals(){
   const features = Object.entries(currentNodes).map(([id, v]) => ({
@@ -970,16 +1023,23 @@ function applyCorrect(){
 
   if (DISRUPT_MODE === "routes"){
     const sc = ROUTE_SCENARIOS[routeScenarioIndex];
+    const disruptedKeys = new Set(sc.disruptPairs.map(([A,B])=>keyPair(A,B)));
 
     // GREEN correction persists
     setFixByPairs(sc.correctionPairs);
     FIX_PERSIST = true;
 
-    // unpause all
+    // unpause all + reroute only impacted flights through correction graph
     for (const PL of PLANES){
       PL.paused = false;
       PL.affectedKey = null;
       PL.reroute = null;
+
+      if (disruptedKeys.has(keyPair(PL.A, PL.B))){
+        const hops = findHopPath(PL.A, PL.B, sc.correctionPairs);
+        const reroute = buildCompositeRoute(hops);
+        if (reroute) PL.reroute = reroute;
+      }
     }
 
     ROUTE_DISRUPTED = false;
@@ -998,11 +1058,15 @@ function applyCorrect(){
     setFixByPairs(bypass);
     FIX_PERSIST = true;
 
-    // unpause all
+    // unpause all. Flights touching blocked node stay paused to avoid using blocked airspace.
     for (const PL of PLANES){
       PL.paused = false;
       PL.affectedKey = null;
       PL.reroute = null;
+
+      if (PL.A === sc.block || PL.B === sc.block){
+        PL.paused = true;
+      }
     }
 
     COUNTRY_DISRUPTED = false;
