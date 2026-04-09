@@ -461,6 +461,38 @@ function buildCompositeRoute(hops){
   return out.length >= 2 ? out : null;
 }
 
+function assignPlaneReroute(PL, rerouteCoords){
+  PL.reroute = rerouteCoords || null;
+  PL.paused = false;
+  PL.affectedKey = null;
+  PL.seg = 0;
+  PL.t = Math.random() * 0.2;
+}
+
+function pickCountryBypassHops(PL, sc){
+  const bypassPairs = sc?.bypassPairs || [];
+  if (!bypassPairs.length) return null;
+
+  const anchor = (PL.A === sc.block) ? PL.B : PL.A;
+  if (!anchor || anchor === sc.block) return null;
+
+  // Prefer direct bypass from the affected anchor node.
+  for (const [X,Y] of bypassPairs){
+    if (X === anchor && Y !== sc.block) return [anchor, Y];
+    if (Y === anchor && X !== sc.block) return [anchor, X];
+  }
+
+  // Fallback: find any reachable bypass node from anchor within bypass graph.
+  const candidateTargets = [...new Set(
+    bypassPairs.flat().filter((n)=>n !== anchor && n !== sc.block)
+  )];
+  for (const target of candidateTargets){
+    const hops = findHopPath(anchor, target, bypassPairs, sc.block);
+    if (hops && hops.length >= 2) return hops;
+  }
+  return null;
+}
+
 /* ---------- Capitals layer ---------- */
 function upsertCapitals(){
   const features = Object.entries(currentNodes).map(([id, v]) => ({
@@ -1031,14 +1063,12 @@ function applyCorrect(){
 
     // unpause all + reroute only impacted flights through correction graph
     for (const PL of PLANES){
-      PL.paused = false;
-      PL.affectedKey = null;
-      PL.reroute = null;
+      assignPlaneReroute(PL, null);
 
       if (disruptedKeys.has(keyPair(PL.A, PL.B))){
         const hops = findHopPath(PL.A, PL.B, sc.correctionPairs);
         const reroute = buildCompositeRoute(hops);
-        if (reroute) PL.reroute = reroute;
+        if (reroute) assignPlaneReroute(PL, reroute);
       }
     }
 
@@ -1058,14 +1088,18 @@ function applyCorrect(){
     setFixByPairs(bypass);
     FIX_PERSIST = true;
 
-    // unpause all. Flights touching blocked node stay paused to avoid using blocked airspace.
+    // Apply bypass paths so impacted flights visibly follow corrected reroutes.
     for (const PL of PLANES){
-      PL.paused = false;
-      PL.affectedKey = null;
-      PL.reroute = null;
+      assignPlaneReroute(PL, null);
 
       if (PL.A === sc.block || PL.B === sc.block){
-        PL.paused = true;
+        const hops = pickCountryBypassHops(PL, sc);
+        const reroute = buildCompositeRoute(hops);
+        if (reroute){
+          assignPlaneReroute(PL, reroute);
+        } else {
+          PL.paused = true;
+        }
       }
     }
 
