@@ -74,7 +74,9 @@ const HUB = "DXB";
 /* ---------- Corridors ---------- */
 const SIGNATURE_CORRIDORS_NORMAL = [
   ["LON","NYC"],
+  ["LON","DXB"],
   ["FRA","ROM"],
+  ["DXB","HKG"],
   ["HKG","TYO"],
   ["NYC","CHI"],
   ["FRA","MOW"],
@@ -821,27 +823,27 @@ const ROUTE_SCENARIOS = [
   {
     name: "London to New York corridor disruption",
     disruptPairs: [["LON","NYC"]],
-    correctionPairs: [["LON","FRA"], ["FRA","NYC"]],
+    correctionPairs: [["LON","CHI"], ["CHI","NYC"]],
     rerouteRules: [
-      { pair:["LON","NYC"], hops:["LON","FRA","NYC"] }
+      { pair:["LON","NYC"], hops:["LON","CHI","NYC"] }
     ],
     disruptNarration:
       "Disruption detected. North Atlantic turbulence is forcing capacity reductions on the London to New York corridor. Impacted flights are paused.",
     correctNarration:
-      "Correction applied. Flights are rerouted via Frankfurt to stabilize flow and maintain service levels."
+      "Correction applied. Flights are rerouted via Chicago to stabilize flow and maintain service levels."
   },
   {
-    name: "Frankfurt to Dubai to Hong Kong corridor disruption",
-    disruptPairs: [["FRA","DXB"], ["DXB","HKG"]],
-    correctionPairs: [["FRA","DEL"], ["DEL","DXB"], ["DEL","HKG"]],
+    name: "London to Dubai to Hong Kong corridor disruption",
+    disruptPairs: [["LON","DXB"], ["DXB","HKG"]],
+    correctionPairs: [["LON","DXB"], ["DXB","TYO"], ["TYO","HKG"]],
     rerouteRules: [
-      { pair:["FRA","DXB"], hops:["FRA","DEL","DXB"] },
-      { pair:["DXB","HKG"], hops:["DXB","DEL","HKG"] }
+      { pair:["LON","DXB"], hops:["LON","DXB"] },
+      { pair:["DXB","HKG"], hops:["DXB","TYO","HKG"] }
     ],
     disruptNarration:
-      "Disruption detected. The Frankfurt to Dubai to Hong Kong flow is constrained. Impacted flights are paused.",
+      "Disruption detected. The London to Dubai to Hong Kong flow is constrained. Impacted flights are paused.",
     correctNarration:
-      "Correction applied. Rerouting through New Delhi to preserve Frankfurt, Dubai, and Hong Kong connectivity."
+      "Correction applied. Dubai to Hong Kong flights are rerouted through Tokyo while London to Dubai remains active."
   },
   {
     name: "East Asia corridor congestion",
