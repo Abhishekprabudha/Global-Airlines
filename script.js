@@ -990,7 +990,7 @@ function addCity(code){
 }
 
 /* ---------- Disrupt Routes ---------- */
-function startDisruptRoutes(){
+function startDisruptRoutes(indexOverride = null){
   if (COUNTRY_DISRUPTED){
     toast("Country disruption active. Press Correct or Normal first.");
     return;
@@ -1004,7 +1004,11 @@ function startDisruptRoutes(){
   clearOverlaysHard();
 
   DISRUPT_MODE = "routes";
-  routeScenarioIndex = (routeScenarioIndex + 1) % ROUTE_SCENARIOS.length;
+  if (typeof indexOverride === "number" && indexOverride >= 0 && indexOverride < ROUTE_SCENARIOS.length){
+    routeScenarioIndex = indexOverride;
+  } else {
+    routeScenarioIndex = (routeScenarioIndex + 1) % ROUTE_SCENARIOS.length;
+  }
   const sc = ROUTE_SCENARIOS[routeScenarioIndex];
 
   ROUTE_DISRUPTED = true;
@@ -1029,7 +1033,7 @@ function startDisruptRoutes(){
 }
 
 /* ---------- Disrupt Countries ---------- */
-function startDisruptCountries(){
+function startDisruptCountries(indexOverride = null){
   if (ROUTE_DISRUPTED){
     toast("Route disruption active. Press Correct or Normal first.");
     return;
@@ -1043,7 +1047,11 @@ function startDisruptCountries(){
   clearOverlaysHard();
 
   DISRUPT_MODE = "countries";
-  countryScenarioIndex = (countryScenarioIndex + 1) % COUNTRY_SCENARIOS.length;
+  if (typeof indexOverride === "number" && indexOverride >= 0 && indexOverride < COUNTRY_SCENARIOS.length){
+    countryScenarioIndex = indexOverride;
+  } else {
+    countryScenarioIndex = (countryScenarioIndex + 1) % COUNTRY_SCENARIOS.length;
+  }
   const sc = COUNTRY_SCENARIOS[countryScenarioIndex];
 
   COUNTRY_DISRUPTED = true;
@@ -1148,6 +1156,60 @@ document.getElementById('btnDisruptCountries')?.addEventListener('click', ()=>st
 document.getElementById('btnCorrect')?.addEventListener('click', ()=>applyCorrect());
 document.getElementById('btnAddParis')?.addEventListener('click', ()=>addCity("PAR"));
 document.getElementById('btnAddVienna')?.addEventListener('click', ()=>addCity("VIE"));
+
+function closeDisruptionMenus(){
+  document.getElementById("menuDisruptRoutes")?.classList.remove("open");
+  document.getElementById("menuDisruptCountries")?.classList.remove("open");
+}
+
+function toggleDisruptionMenu(menuEl){
+  if (!menuEl) return;
+  const isOpen = menuEl.classList.contains("open");
+  closeDisruptionMenus();
+  if (!isOpen) menuEl.classList.add("open");
+}
+
+function buildDisruptionMenu(menuEl, scenarios, onSelect){
+  if (!menuEl) return;
+  menuEl.innerHTML = "";
+
+  scenarios.forEach((sc, index)=>{
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "dropdown-item";
+    btn.textContent = sc.name;
+    btn.addEventListener("click", (ev)=>{
+      ev.stopPropagation();
+      closeDisruptionMenus();
+      onSelect(index);
+    });
+    menuEl.appendChild(btn);
+  });
+}
+
+buildDisruptionMenu(
+  document.getElementById("menuDisruptRoutes"),
+  ROUTE_SCENARIOS,
+  (index)=>startDisruptRoutes(index)
+);
+buildDisruptionMenu(
+  document.getElementById("menuDisruptCountries"),
+  COUNTRY_SCENARIOS,
+  (index)=>startDisruptCountries(index)
+);
+
+document.getElementById("btnDisruptRoutesMenu")?.addEventListener("click", (ev)=>{
+  ev.stopPropagation();
+  toggleDisruptionMenu(document.getElementById("menuDisruptRoutes"));
+});
+document.getElementById("btnDisruptCountriesMenu")?.addEventListener("click", (ev)=>{
+  ev.stopPropagation();
+  toggleDisruptionMenu(document.getElementById("menuDisruptCountries"));
+});
+document.addEventListener("click", (ev)=>{
+  const insideMenu = ev.target && ev.target.closest && ev.target.closest(".split-btn");
+  if (!insideMenu) closeDisruptionMenus();
+});
 
 /* ---------- Boot ---------- */
 map.on("load", async ()=>{
