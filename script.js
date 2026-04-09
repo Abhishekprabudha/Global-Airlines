@@ -461,6 +461,16 @@ function buildCompositeRoute(hops){
   return out.length >= 2 ? out : null;
 }
 
+function getScenarioRerouteHops(sc, A, B){
+  for (const rule of sc?.rerouteRules || []){
+    if (keyPair(rule.pair?.[0], rule.pair?.[1]) !== keyPair(A,B)) continue;
+    if (!rule.hops || rule.hops.length < 2) continue;
+    if (rule.hops[0] === A) return [...rule.hops];
+    if (rule.hops[rule.hops.length - 1] === A) return [...rule.hops].reverse();
+  }
+  return null;
+}
+
 function assignPlaneReroute(PL, rerouteCoords){
   PL.reroute = rerouteCoords || null;
   PL.paused = false;
@@ -470,6 +480,12 @@ function assignPlaneReroute(PL, rerouteCoords){
 }
 
 function pickCountryBypassHops(PL, sc){
+  if (sc?.block === "THR"){
+    if (PL.A === "DEL" || PL.B === "DEL") return ["DEL","KBL","MOW"];
+    if (PL.A === "MOW" || PL.B === "MOW") return ["MOW","KBL","DEL"];
+    if (PL.A === "KBL" || PL.B === "KBL") return ["KBL","MOW","DEL"];
+  }
+
   const bypassPairs = sc?.bypassPairs || [];
   if (!bypassPairs.length) return null;
 
@@ -803,22 +819,29 @@ function fitToNodes(){
 /* ---------- SCENARIOS ---------- */
 const ROUTE_SCENARIOS = [
   {
-    name: "North Atlantic jetstream turbulence",
+    name: "London to New York corridor disruption",
     disruptPairs: [["LON","NYC"]],
-    correctionPairs: [["LON","FRA"], ["FRA","NYC"], ["NYC","CHI"], ["CHI","LON"]],
+    correctionPairs: [["LON","FRA"], ["FRA","NYC"]],
+    rerouteRules: [
+      { pair:["LON","NYC"], hops:["LON","FRA","NYC"] }
+    ],
     disruptNarration:
       "Disruption detected. North Atlantic turbulence is forcing capacity reductions on the London to New York corridor. Impacted flights are paused.",
     correctNarration:
-      "Correction applied. Flights are rerouted via Frankfurt and Chicago to stabilize flow and maintain service levels."
+      "Correction applied. Flights are rerouted via Frankfurt to stabilize flow and maintain service levels."
   },
   {
-    name: "Gulf airspace constraint",
-    disruptPairs: [["DXB","HKG"], ["DXB","LON"]],
-    correctionPairs: [["DXB","ROM"], ["ROM","LON"], ["DXB","TYO"], ["TYO","HKG"]],
+    name: "Frankfurt to Dubai to Hong Kong corridor disruption",
+    disruptPairs: [["FRA","DXB"], ["DXB","HKG"]],
+    correctionPairs: [["FRA","DEL"], ["DEL","DXB"], ["DEL","HKG"]],
+    rerouteRules: [
+      { pair:["FRA","DXB"], hops:["FRA","DEL","DXB"] },
+      { pair:["DXB","HKG"], hops:["DXB","DEL","HKG"] }
+    ],
     disruptNarration:
-      "Disruption detected. Gulf airspace constraints are affecting Dubai links to London and Hong Kong. Impacted flights are paused.",
+      "Disruption detected. The Frankfurt to Dubai to Hong Kong flow is constrained. Impacted flights are paused.",
     correctNarration:
-      "Correction applied. Rerouting via Rome and Tokyo to preserve connectivity while avoiding constrained corridors."
+      "Correction applied. Rerouting through New Delhi to preserve Frankfurt, Dubai, and Hong Kong connectivity."
   },
   {
     name: "East Asia corridor congestion",
@@ -836,7 +859,7 @@ const COUNTRY_SCENARIOS = [
     name: "Iran airspace closure (bypass Tehran)",
     block: "THR",
     affectedPairs: [["MOW","THR"], ["THR","KBL"], ["THR","DEL"]],
-    bypassPairs: [["MOW","KBL"], ["MOW","DEL"], ["KBL","DEL"]],
+    bypassPairs: [["DEL","KBL"], ["KBL","MOW"]],
     disruptNarration:
       "Country disruption detected. Tehran is unavailable. Impacted corridors are paused. Press Correct to apply bypass corridors.",
     correctNarration:
@@ -1066,7 +1089,8 @@ function applyCorrect(){
       assignPlaneReroute(PL, null);
 
       if (disruptedKeys.has(keyPair(PL.A, PL.B))){
-        const hops = findHopPath(PL.A, PL.B, sc.correctionPairs);
+        const hops = getScenarioRerouteHops(sc, PL.A, PL.B)
+          || findHopPath(PL.A, PL.B, sc.correctionPairs);
         const reroute = buildCompositeRoute(hops);
         if (reroute) assignPlaneReroute(PL, reroute);
       }
